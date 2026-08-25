@@ -42,7 +42,7 @@ An original, local-first wellbeing companion for Hack for Humanity | Summer 2026
 
 The current source snapshot was independently rerun on 2026-08-25 with these reproducible gates:
 
-- current unsealed source behavior: **433/433 tests passed** across 25 test files (70 reported suites), including all **11/11 memory-generation/privacy-session regression tests**, **5/5 hands-free control tests**, and **3/3 drawer-accessibility/privacy-wording tests**; the hands-free group includes two genuine buffered interim/final callback interleavings after lock and guardian unlock, while the memory suite covers Nina Simone collision preservation, ordinary Forget during a delayed local-model reply, relock invalidation, vault-creation mutation blocking, and app-level quiescence wiring;
+- current packaged source behavior: **433/433 tests passed** across 25 test files (70 reported suites), including all **11/11 memory-generation/privacy-session regression tests**, **5/5 hands-free control tests**, and **3/3 drawer-accessibility/privacy-wording tests**; the hands-free group includes two genuine buffered interim/final callback interleavings after lock and guardian unlock, while the memory suite covers Nina Simone collision preservation, ordinary Forget during a delayed local-model reply, relock invalidation, vault-creation mutation blocking, and app-level quiescence wiring;
 - expanded hostile evaluation: **57/57 scenarios passed**; the machine-readable known-defects register contains **0 open entries for this tested source snapshot**, which is not a claim that the software can have no defects;
 - Windows desktop shell: **51/51 tests passed**;
 - TypeScript compilation and the Vite production build: passed;
