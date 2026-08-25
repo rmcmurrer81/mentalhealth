@@ -1,4 +1,4 @@
-import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatedMascot } from "./components/AnimatedMascot";
 import { classifyExpression, respond } from "./lib/companion";
 import {
@@ -192,6 +192,11 @@ export default function App() {
   const memoryDrawerRef = useRef<HTMLElement | null>(null);
   const settingsDrawerRef = useRef<HTMLElement | null>(null);
   const gameDrawerRef = useRef<HTMLElement | null>(null);
+  const drawerWasOpenRef = useRef(false);
+  const drawerReturnFocusRef = useRef<HTMLElement | null>(null);
+  const unlockPasswordInputRef = useRef<HTMLInputElement | null>(null);
+  const talkButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lockStateWasLockedRef = useRef(locked);
 
   profileRef.current = profile;
   accessRoleRef.current = accessRole;
@@ -300,10 +305,35 @@ export default function App() {
     const turns = turnsRef.current;
     turns?.scrollTo({ top: turns.scrollHeight, behavior: "smooth" });
   }, [profile.turns]);
-  useEffect(() => {
-    const drawer = memoryOpen ? memoryDrawerRef.current : settingsOpen ? settingsDrawerRef.current : gameOpen ? gameDrawerRef.current : null;
-    drawer?.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled]), textarea:not([disabled])")?.focus();
+  useLayoutEffect(() => {
+    const drawerIsOpen = memoryOpen || settingsOpen || gameOpen;
+
+    if (drawerIsOpen && !drawerWasOpenRef.current) {
+      const activeElement = document.activeElement;
+      drawerReturnFocusRef.current = activeElement instanceof HTMLElement ? activeElement : null;
+    } else if (!drawerIsOpen && drawerWasOpenRef.current) {
+      const returnTarget = drawerReturnFocusRef.current;
+      if (returnTarget?.isConnected) returnTarget.focus();
+      else talkButtonRef.current?.focus();
+      drawerReturnFocusRef.current = null;
+    }
+
+    drawerWasOpenRef.current = drawerIsOpen;
   }, [memoryOpen, settingsOpen, gameOpen]);
+  useLayoutEffect(() => {
+    if (locked) unlockPasswordInputRef.current?.focus();
+    else if (lockStateWasLockedRef.current) talkButtonRef.current?.focus();
+    lockStateWasLockedRef.current = locked;
+  }, [locked]);
+  useLayoutEffect(() => {
+    const drawer = memoryOpen ? memoryDrawerRef.current : settingsOpen ? settingsDrawerRef.current : gameOpen ? gameDrawerRef.current : null;
+    if (!drawer) return;
+    const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex='-1'])",
+    )).filter((element) => !element.hasAttribute("inert") && element.getAttribute("aria-hidden") !== "true");
+    const activeElement = document.activeElement;
+    if (!(activeElement instanceof HTMLElement) || !focusable.includes(activeElement)) focusable[0]?.focus();
+  });
   useEffect(() => {
     const timer = window.setTimeout(() => setWaving(false), 4_500);
     return () => window.clearTimeout(timer);
@@ -976,6 +1006,7 @@ export default function App() {
     setUnlockPassword("");
     setSettingsOpen(false);
     setMemoryOpen(false);
+    setGameOpen(false);
     setLocked(true);
   }
 
@@ -1038,6 +1069,7 @@ export default function App() {
           <label className="secure-field">
             <span>Password</span>
             <input
+              ref={unlockPasswordInputRef}
               type="password"
               autoComplete="current-password"
               value={unlockPassword}
@@ -1062,12 +1094,12 @@ export default function App() {
           <span>working<br />title</span>
         </div>
         <nav>
-          <button className="rail-button active" aria-current="page"><span>◉</span> Talk</button>
+          <button ref={talkButtonRef} className="rail-button active" aria-current="page"><span>◉</span> Talk</button>
           <button className="rail-button" onClick={() => { setGameOpen(true); setMemoryOpen(false); setSettingsOpen(false); }}><span>✦</span> Play</button>
           <button className="rail-button" onClick={() => { setMemoryOpen(true); setGameOpen(false); setSettingsOpen(false); }}><span>◇</span> Memory</button>
           <button className="rail-button" onClick={() => { setSettingsOpen(true); setGameOpen(false); setMemoryOpen(false); }}><span>⌁</span> Settings</button>
         </nav>
-        <div className="local-badge"><span className="status-dot" /> Device-local<br /><small>No cloud account</small></div>
+        <div className="local-badge"><span className="status-dot" /> Local core<br /><small>No required cloud account</small></div>
       </aside>
 
       <main>
@@ -1093,8 +1125,8 @@ export default function App() {
           <div className="presence-copy">
             <div className="presence-label"><span className="status-dot" /> {listening ? "LISTENING" : speaking && handsFree ? "REPLYING" : handsFree ? "HANDS-FREE ON" : lastSafety === "urgent" ? "STAYING WITH YOU" : "HERE WITH YOU"}</div>
             <h2>{lastSafety === "urgent" ? "We only need the next safe minute." : "No judgment. No starting over."}</h2>
-            <p>{accessRole === "guardian" ? "This guardian conversation is encrypted separately and cannot reveal the primary user’s private space." : "A synthetic friend who listens and remembers without pretending to be biological. Conversation and memories stay on this device, and you control deletion."}</p>
-            <div className="privacy-row"><span>{privacyConfigured ? "▣ Encrypted local vault" : "▣ Local memory"}</span><span>◌ Works offline</span><span>⌫ You control deletion</span></div>
+            <p>{accessRole === "guardian" ? "This guardian conversation is encrypted separately and cannot reveal the primary user’s private space." : "A synthetic friend who listens and remembers without pretending to be biological. Typed conversation and saved memories stay in this device profile. Hands-free recognition may use your browser or operating-system speech service; you control deletion."}</p>
+            <div className="privacy-row"><span>{privacyConfigured ? "▣ Encrypted local vault" : "▣ Local memory"}</span><span>◌ Core works offline</span><span>⌫ You control deletion</span></div>
           </div>
         </section>
 

@@ -129,16 +129,16 @@ boundaries, shortcuts, the uninstall key, and reparse points before deletion.
   is fail-closed and its shipped provider is inactive; real synthesis and audible
   playback are not connected or claimed. A later provider integration requires a
   rebuild, full end-to-end listening checks, and a new package seal.
-- The prior sealed development archive includes the provider-neutral renderer,
-  inactive fail-closed local-voice broker, and approved static previews, but it
-  predates and does not contain the current multi-clause memory extraction,
-  deterministic recall, provenance-linked transcript forgetting and Nina collision
-  fix, in-flight Forget reply refresh, or privacy-session/vault-transition race
-  fixes. It also predates the buffered speech-recognition callback isolation that
-  binds callbacks to the exact unlocked privacy session. It is superseded package
-  evidence, not the current source package. Use its exact ZIP only with the matching
-  SHA-256 sidecar and external receipt; rebuild and reseal before distributing the
-  current source.
+- The current privacy430 archive includes the provider-neutral renderer, inactive
+  fail-closed local-voice broker, static previews, multi-clause memory extraction,
+  deterministic recall, provenance-linked transcript forgetting, privacy-session
+  invalidation, vault-transition guards, and buffered speech-recognition callback
+  isolation. It is 179,669,001 bytes with SHA-256
+  `8BC39512C2B38E4B294770C521E377AF0AEBCB8E3ABD13A04B9F4102D3C65EE2` and
+  passed three consecutive packaged-process smokes. It remains an unsigned test
+  candidate; use it only with its matching sidecar and receipt. The newer three-test
+  drawer-accessibility/privacy-language source repair postdates this seal and must be
+  rebuilt and reverified before it is described as packaged functionality.
 - Optional Ollama wording is not a clinical model and does not replace the
   deterministic safety classifier or response validator.
 - No hosted URL, public repository, cloud AI, email connector, upload, or hackathon
