@@ -1,14 +1,16 @@
 # Current verification evidence — working title
 
-**Evidence date:** 2026-08-25 EDT  
-**Latest sealed-package baseline:** `168d9131d0c3cd22b41307be876856b9d65db583`  
+**Evidence date:** 2026-08-25 EDT
+
+**Sealed-package source revision:** `a49cdc6971ef19c682037cb4adec77d30843538e`
+
 **Product identity:** `[FINAL PRODUCT NAME]` remains intentionally unresolved.
 
 This is the sanitized, repository-safe summary for the current source and Windows
 candidate. It contains no conversation content, health records, local machine paths,
 account identifiers, or credentials.
 
-## Current unsealed source gates
+## Current source and package gates
 
 - Source behavior: **433/433 tests passed** across **70/70 reported suites**.
 - Independent hostile evaluation: **57/57 scenarios passed**.
@@ -18,20 +20,19 @@ account identifiers, or credentials.
   bounded result for the tested revision, not a claim that the product can have no
   defects.
 - The additional three source tests cover drawer accessibility and visible privacy
-  wording. This current source is newer than the sealed Windows archive below and
-  has not yet been repackaged.
+  wording. They are included in the sealed Windows archive below.
 - These are software and adversarial-scenario tests, **not clinical validation**,
   diagnostic evaluation, or evidence of treatment effectiveness.
 
 ## Current Windows candidate
 
-This exact candidate was built from baseline `168d913`, whose sealed source gate was
-**430/430 across 68/68 reported suites**. It does not contain the newer three-test
-drawer-accessibility/privacy-language repair.
+This exact candidate was built from revision
+`a49cdc6971ef19c682037cb4adec77d30843538e` and contains the tested 433-test
+drawer-accessibility/privacy-language source revision.
 
 - Archive: `Wellbeing-Companion-Working-Title-Setup-0.1.0-win32-x64.zip`
-- Size: **179,669,001 bytes**
-- SHA-256: `8BC39512C2B38E4B294770C521E377AF0AEBCB8E3ABD13A04B9F4102D3C65EE2`
+- Size: **175,045,666 bytes**
+- SHA-256: `88CBCD8864A815411C6971180EA3A4C3A1479B2A858C9CFF73EB5AB3CF67632E`
 - Authenticode status: **NotSigned**
 - Three consecutive bounded packaged-process smokes passed. Each started the actual
   packaged executable and required a native window, tray, renderer, fixed-loopback
@@ -74,10 +75,9 @@ installer in a disposable Windows user or virtual machine.
 - The public repository, downloadable judge path, final product captures, accessible
   video at four minutes or less, retimed English captions, link checks, and final
   owner approval are still pending.
-- If the newer accessibility/privacy-language repair is selected for submission,
-  rebuild, rerun the packaged smokes and lifecycle harness, reseal, and replace the
+- Any source change selected for submission requires a rebuild, three packaged
+  smokes, the lifecycle harness, a new checksum seal, and replacement of the exact
   package size and checksum everywhere before recording.
 
 Historical receipts under the local verification archive remain useful for audit
-history but do not supersede the distinction above between current unsealed source
-and the sealed privacy430 package.
+history but do not supersede the current 433-test package and exact seal above.
