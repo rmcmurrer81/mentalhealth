@@ -36,7 +36,7 @@ An original, local-first wellbeing companion for Hack for Humanity | Summer 2026
 - conversation behavior is extensively scenario-tested, but the tests are not clinical validation or a valid clinical “Turing test”;
 - no clinical validation, diagnosis, prescription, or dose-changing behavior;
 - no cloud language-model integration or public-model transfer is enabled; optional hands-free recognition retains the browser/operating-system service boundary described above;
-- the current privacy430 Windows development archive is checksum-sealed and passed three packaged-process smokes; it remains unsigned, and its isolated lifecycle harness did not execute the real installer or mutate a real Windows profile. Owner testing in a disposable Windows user or virtual machine and publisher signing remain required before public release.
+- the current Windows development archive contains this 433-test accessibility/privacy revision, is checksum-sealed, and passed three packaged-process smokes; it remains unsigned, and its isolated lifecycle harness did not execute the real installer or mutate a real Windows profile. Owner testing in a disposable Windows user or virtual machine and publisher signing remain required before public release.
 
 ## Verification snapshot
 
@@ -48,11 +48,11 @@ The current source snapshot was independently rerun on 2026-08-25 with these rep
 - TypeScript compilation and the Vite production build: passed;
 - both owner-approved static preview WAVs: exact SHA-256 bindings passed;
 - desktop JavaScript and PowerShell syntax gates: passed.
-- current privacy430 Windows setup archive: **179,669,001 bytes**, SHA-256 `8BC39512C2B38E4B294770C521E377AF0AEBCB8E3ABD13A04B9F4102D3C65EE2`, Authenticode `NotSigned`; three consecutive packaged-process smokes passed;
-- prior packaged-process smoke: window, notification-area tray, renderer, localStorage round trip, and loopback health all passed;
-- prior isolated preserve/reinstall/remove-all lifecycle: passed without modifying the real user profile; both package gates must be rerun on the next build.
+- current 433-test Windows setup archive: exact size and SHA-256 are recorded in its matching external sidecar, package receipt, and sanitized verification evidence; Authenticode `NotSigned`; three consecutive packaged-process smokes passed;
+- packaged-process smoke: window, notification-area tray, renderer, localStorage round trip, and loopback health all passed;
+- isolated preserve/reinstall/remove-all lifecycle: passed without modifying the real user profile; it used the exact sealed payload but did not execute the real installer.
 
-The reproducible evaluation protocol, fictional corpus, hostile probes, and report generator are in [`evaluation/`](evaluation/). Running the evaluation generator produces the ignored machine report locally. These are software and adversarial scenario tests, not clinical validation. The sanitized current evidence is in [`docs/CURRENT_VERIFICATION_EVIDENCE.md`](docs/CURRENT_VERIFICATION_EVIDENCE.md). The sealed privacy430 archive matches baseline `168d913` and its 430-test source inventory; the newer 433-test accessibility/privacy-language source has not yet been repackaged. The archive is unsigned, and its lifecycle receipt is a temporary-root harness rather than a real-profile installer run.
+The reproducible evaluation protocol, fictional corpus, hostile probes, and report generator are in [`evaluation/`](evaluation/). Running the evaluation generator produces the ignored machine report locally. These are software and adversarial scenario tests, not clinical validation. The sanitized current evidence is in [`docs/CURRENT_VERIFICATION_EVIDENCE.md`](docs/CURRENT_VERIFICATION_EVIDENCE.md). The current sealed archive contains the 433-test accessibility/privacy-language revision. It is unsigned, and its lifecycle receipt is a temporary-root harness rather than a real-profile installer run.
 
 ## Run locally
 

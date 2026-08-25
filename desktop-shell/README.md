@@ -129,16 +129,14 @@ boundaries, shortcuts, the uninstall key, and reparse points before deletion.
   is fail-closed and its shipped provider is inactive; real synthesis and audible
   playback are not connected or claimed. A later provider integration requires a
   rebuild, full end-to-end listening checks, and a new package seal.
-- The current privacy430 archive includes the provider-neutral renderer, inactive
+- The current 433-test archive includes the provider-neutral renderer, inactive
   fail-closed local-voice broker, static previews, multi-clause memory extraction,
   deterministic recall, provenance-linked transcript forgetting, privacy-session
   invalidation, vault-transition guards, and buffered speech-recognition callback
-  isolation. It is 179,669,001 bytes with SHA-256
-  `8BC39512C2B38E4B294770C521E377AF0AEBCB8E3ABD13A04B9F4102D3C65EE2` and
+  isolation, plus the three-test drawer-accessibility/privacy-language repair. It
   passed three consecutive packaged-process smokes. It remains an unsigned test
-  candidate; use it only with its matching sidecar and receipt. The newer three-test
-  drawer-accessibility/privacy-language source repair postdates this seal and must be
-  rebuilt and reverified before it is described as packaged functionality.
+  candidate; use it only with its matching sidecar, package receipt, and sanitized
+  verification evidence, which record the exact final archive size and SHA-256.
 - Optional Ollama wording is not a clinical model and does not replace the
   deterministic safety classifier or response validator.
 - No hosted URL, public repository, cloud AI, email connector, upload, or hackathon
