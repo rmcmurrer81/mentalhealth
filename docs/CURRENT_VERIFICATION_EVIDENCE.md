@@ -4,6 +4,10 @@
 
 **Sealed-package source revision:** `a49cdc6971ef19c682037cb4adec77d30843538e`
 
+**Sealed-package evidence summary:** `c38634f`
+
+**Lifecycle-bound verification revision:** `31d571b`
+
 **Product identity:** `[FINAL PRODUCT NAME]` remains intentionally unresolved.
 
 This is the sanitized, repository-safe summary for the current source and Windows
