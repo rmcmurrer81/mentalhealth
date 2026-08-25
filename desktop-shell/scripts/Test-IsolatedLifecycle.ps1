@@ -8,6 +8,7 @@ $releaseRoot = Join-Path $projectRoot 'release'
 $verificationRoot = Join-Path $projectRoot 'verification'
 $packageVersion = (Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'package.json') | ConvertFrom-Json).version
 $setupZip = Join-Path $releaseRoot "Wellbeing-Companion-Working-Title-Setup-$packageVersion-win32-x64.zip"
+$setupSidecar = "$setupZip.sha256.txt"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("wellbeing-lifecycle-{0}" -f [Guid]::NewGuid().ToString('N'))
 $productId = 'com.kiralabs.wellbeing-companion-working-title'
 
@@ -46,16 +47,36 @@ function Remove-OwnedDirectory {
     Remove-Item -LiteralPath $Path -Recurse -Force
 }
 
-if (-not (Test-Path -LiteralPath $setupZip -PathType Leaf)) { throw "Build the setup ZIP before running the isolated lifecycle harness: $setupZip" }
+foreach ($requiredArtifact in @($setupZip, $setupSidecar)) {
+    if (-not (Test-Path -LiteralPath $requiredArtifact -PathType Leaf)) {
+        throw "Build and seal the setup ZIP before running the isolated lifecycle harness: $requiredArtifact"
+    }
+}
+$setupArchiveItem = Get-Item -LiteralPath $setupZip
+$setupArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupZip).Hash.ToUpperInvariant()
+$expectedSidecar = "$setupArchiveHash  $([IO.Path]::GetFileName($setupZip))"
+$actualSidecar = (Get-Content -Raw -LiteralPath $setupSidecar).Trim()
+if ($actualSidecar -ne $expectedSidecar) { throw 'The isolated lifecycle harness rejected the setup archive sidecar.' }
+$setupSidecarItem = Get-Item -LiteralPath $setupSidecar
+$setupSidecarHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupSidecar).Hash.ToUpperInvariant()
 Assert-UnderTestRoot -Path (Join-Path $testRoot 'sentinel')
 New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
 
 $result = [ordered]@{
-    schema = 1
+    schema = 2
     product = 'Wellbeing companion working-title isolated lifecycle verification'
     realUserProfileMutated = $false
     actualInstallerExecuted = $false
     setupArchiveHashVerified = $false
+    setupArchive = [ordered]@{
+        path = [IO.Path]::GetFileName($setupZip)
+        bytes = [long]$setupArchiveItem.Length
+        sha256 = $setupArchiveHash
+        sidecarPath = [IO.Path]::GetFileName($setupSidecar)
+        sidecarBytes = [long]$setupSidecarItem.Length
+        sidecarSha256 = $setupSidecarHash
+    }
+    embeddedSetupReceipt = $null
     actualPayloadUsed = $false
     desktopAndStartMenuShortcutShapeExercised = $false
     installedAppsEntryShapeExercised = $false
@@ -72,6 +93,13 @@ try {
     $payloadRoot = Join-Path $setupRoot 'Payload'
     $receiptPath = Join-Path $setupRoot 'SETUP-RECEIPT.json'
     if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot 'WellbeingCompanionWorkingTitle.exe') -PathType Leaf)) { throw 'The sealed lifecycle payload is incomplete.' }
+    if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'The sealed lifecycle setup receipt is missing.' }
+    $receiptItem = Get-Item -LiteralPath $receiptPath
+    $result.embeddedSetupReceipt = [ordered]@{
+        path = "Wellbeing-Companion-Working-Title-Setup-$packageVersion/SETUP-RECEIPT.json"
+        bytes = [long]$receiptItem.Length
+        sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $receiptPath).Hash.ToUpperInvariant()
+    }
     $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
     foreach ($record in @($receipt.files)) {
         $fullPath = [IO.Path]::GetFullPath((Join-Path $setupRoot ([string]$record.path).Replace('/', '\')))

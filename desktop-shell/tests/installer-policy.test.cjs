@@ -88,6 +88,11 @@ test('isolated lifecycle harness is temp-root-only and honest about not executin
   assert.match(source, /Assert-UnderTestRoot/);
   assert.match(source, /actualInstallerExecuted = \$false/);
   assert.match(source, /realUserProfileMutated = \$false/);
+  assert.match(source, /\$setupArchiveHash = \(Get-FileHash -Algorithm SHA256 -LiteralPath \$setupZip\)/);
+  assert.match(source, /\$actualSidecar -ne \$expectedSidecar/);
+  assert.match(source, /bytes = \[long\]\$setupArchiveItem\.Length/);
+  assert.match(source, /sha256 = \$setupArchiveHash/);
+  assert.match(source, /embeddedSetupReceipt/);
   assert.match(source, /preserveDataUninstallPassed/);
   assert.match(source, /reinstallRecoveredDataPassed/);
   assert.match(source, /explicitRemoveAllPassed/);
