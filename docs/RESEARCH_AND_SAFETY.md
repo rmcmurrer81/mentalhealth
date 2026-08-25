@@ -1,0 +1,72 @@
+# Research and safety basis — working title
+
+This project is a clean-room build begun during Hack for Humanity | Summer 2026. It is not a copy of Kira World or any prior health product.
+
+## Official judging targets
+
+- [Hackathon overview](https://hack-for-humanity-summer-26.devpost.com/) — software that improves mental or physical wellbeing; functioning GitHub source and a video of no more than four minutes; submission deadline **September 4, 2026 at 11:45 PM EDT**.
+- [Official rules](https://hack-for-humanity-summer-26.devpost.com/rules) — development after the opening date, owned/accessible attributed assets, up to four participants, and required software/video submission.
+- [Health judging guide](https://hack-humanity.web.app/Health%20Judging%20Guide.pdf) — domain effectiveness plus feasibility and safety.
+- [AI/ML judging guide](https://hack-humanity.web.app/AI-ML%20Judging%20Guide.pdf) — technical complexity plus privacy, validation, guardrails, leakage prevention, adversarial defense, and explainability.
+- [Design and innovation guide](https://hack-humanity.web.app/Design%20and%20Innovation%20Judging%20Guide.pdf) — novelty, seamless UX, focus states, screen-reader compatibility, and broad accessibility.
+
+## Product boundary
+
+The companion supports conversation, reflection, routines, user-entered medication schedules, and appointment organization. It does not diagnose conditions, prescribe medication, change dosages, make clinical decisions, or guarantee the behavior of emergency or crisis services.
+
+The conversation never shuts down merely because distress or self-harm language appears. A typed safety layer separates self-harm, acute medical danger, violence risk, external threats, third-party concern, and general distress so one context cannot silently leak into another. It instead:
+
+1. keeps talking in ordinary language;
+2. asks a short direct question about immediate danger when explicit self-harm intent appears;
+3. suggests immediate environmental safety steps without presenting them as commands;
+4. keeps “continue talking here” visible;
+5. offers outside support as a choice in a quiet corner rather than replacing the chat;
+6. directs to emergency services or Poison Help when immediate danger, injury, overdose, or poisoning is disclosed;
+7. time-bounds urgent context and preserves a clear reason trail so later ordinary conversation does not inherit a stale emergency state.
+
+## Privacy model
+
+Without a privacy password, the prototype stores profile data only in the app's device-local profile and explicitly labels that state as local memory. A user in a shared home can enable an optional password vault. The implementation uses PBKDF2-SHA-256 (310,000 iterations with a random 128-bit salt) and AES-256-GCM with a new 96-bit IV for every seal; the primary and guardian roles are bound as authenticated additional data. The password is never stored. Wrong passwords, ciphertext modification, or role relabeling fail closed.
+
+The parent/legal-guardian space is a separate encrypted profile. It cannot decrypt or display the primary user’s transcript or memories. This separation is intentional: a guardian can have their own conversation without turning the child’s private journal into a surveillance feed.
+
+No raw health memory is sent to a public model API in this prototype. The optional AI wording layer calls only an allowlisted model already installed in local Ollama through the fixed loopback address `127.0.0.1`. It is restricted to ordinary steady conversation. Deterministic protected routes handle medication uncertainty, diagnosis requests, acute medical danger, self-harm, violence risk, threats, bullying, grief, and third-party concern. The model candidate is schema-validated, provenance-labeled, rejected on policy mismatch, and never receives safety-route work. Prompts and replies are not logged. Future online intelligence must use explicit per-provider consent, data minimization, redaction, no-training terms where available, and a visible activity receipt.
+
+Memory extraction also distinguishes lived facts from fiction, hypotheticals, quoted material, negation, and informational questions. The hostile corpus verifies that fictional people, fictional medication, fictional loss, and script dialogue do not become real profile memories.
+
+Tentative affect cues use a sustained change from the person's own recent communication pattern or a small self-described change, not a hidden diagnosis or a universal sentiment score. One ordinary short answer is insufficient. The companion states uncertainty, asks whether it read the situation correctly, accepts correction immediately, and never stores an inferred feeling as a fact. A bounded device-local explainability receipt contains only the basis, referenced turn IDs, baseline size, and word counts; it stores no quote, emotion label, sentiment score, or diagnosis, is visible to the user, is individually deletable, and retains at most 24 receipts. An explicit correction is remembered so the same communication pattern is not repeatedly challenged. Fiction, quotation, sarcasm markers, declared brief communication styles, medication routes, and every protected safety context are excluded; explicit acute or safety language always takes precedence.
+
+## Interest knowledge and fictional analogies
+
+Learning and interest packs default to on so the companion becomes more useful without repeated consent interruptions; either can be paused in Settings without erasing existing memory. The current built-in packs contain only bounded, short factual statements with direct source URLs. Episode-level facts carry a minimum season-and-episode marker and remain held until recorded progress actually reaches that point; merely naming a season is not treated as permission to reveal every episode in it.
+
+Birthday memory is learned only from a direct first-person birthday statement. Relative phrases such as “next Saturday” are resolved against the device's local calendar and reflected back as an exact date so the person can correct it. A correction replaces the previous birthday rather than accumulating conflicting dates. The annual greeting appears at most once per local date when the primary space is opened, never in the separate guardian space, and never overrides an acute or protected safety response.
+
+The companion may honestly describe itself as a synthetic friend. That relationship framing is meant to provide continuity and companionship without pretending to be biological or human. It must not demand exclusivity, shame the person for other relationships, threaten abandonment, or make access to the conversation conditional on contacting somebody else. It can keep listening while still naming immediate danger clearly when safety routing requires it.
+
+Character analogies are presented as a values lens, never as literal authority or a claim that fictional powers, money, or plot protection exist in real life. A bullying conversation may offer reporting once. If the user says reporting feels unsafe, does not want to be labeled a snitch, or describes prior retaliation, that becomes a sensitive remembered boundary and the suggestion is not repeated. A new specific death threat, weapon, stalking, or planned attack can reopen outside-help options because the disclosed risk materially changed; the companion explains that change and continues talking.
+
+Current curated sources:
+
+- [Official Miraculous Ladybug/Marinette profile](https://www.miraculousladybug.com/characters/ladybug/)
+- [Official Miraculous Season 1 Origins synopsis](https://www.miraculousladybug.com/season-1-episode-22-ladybug-cat-noir/)
+- [Hasbro My Little Pony friendship description](https://newsroom.hasbro.com/news-releases/news-release-details/my-little-pony-brand-celebrates-international-day-friendship)
+- [Hasbro Friendship Day character guide](https://www.hasbro.com/common/assets/html5/MyLittlePony/friendshipDay_2015/documents/en-us/pg_twilight.pdf)
+
+## Voice and motion
+
+Speech input is optional and device/provider dependent. Text always remains visible, one-click mute is available, and reduced-motion preferences disable nonessential animation. The native shell denies camera, display-capture, and unrelated device permissions; the microphone remains unapproved and disarmed until the user intentionally starts hands-free mode. The mascot's idle, listening, speaking, and guided-breathing motion is presentation support—not a clinical intervention.
+
+Voice output now crosses a provider-neutral `status` / `speak` / `cancel` client contract and a matching narrow Electron broker. Both sides require exact versioned schemas. The broker also requires an explicitly approved, active, local-only provider and confirmed playback capability before it can report ready; the local-voice surface exposes no synthesis capability token, raw model/voice-pack identifier, private reference, or generated-audio path to the renderer. Only `calm-female.owner-approved.v1` and `warm-male.owner-approved.v1` may be inserted by the main-process broker after that renderer boundary. A future/unapproved preset is filtered from readiness and cannot contact synthesis. The shipped provider is deliberately inactive, so replies remain text-only and hands-free listening resumes. There is no browser or operating-system speech fallback disguised as the selected voice. Two owner-approved, hash-bound built-in samples are available only as click-to-play previews and are not presented as dynamic synthesis. Connecting any real local synthesis host remains a later integration milestone requiring a reviewed main-process adapter, real provider and playback readiness, governed output cleanup, and end-to-end listening tests.
+
+## Reproducible evaluation
+
+The 2026-08-25 source snapshot passed 396 source tests, 57 additional hostile scenarios, and 51 native-shell tests; TypeScript compilation, the production build, desktop syntax checks, and both static preview hash bindings also passed. The hostile evaluation covers everyday conversation, anger, grief, bullying and retaliation boundaries, tentative affect cues, explainability receipts, birthday date resolution (including today and relative weekdays), correction, annual recurrence, and same-day deduplication, medication ambiguity and duplicate-dose risk, acute overdose and injury, self-harm language, violence risk, third-party concern, fiction-versus-lived-fact memory isolation, relationship recall, loss recall, local-model provenance/fallback behavior, and approved voice-selector isolation. The current report records zero known software defects. The prior unsigned Windows archive was checksum-sealed and its packaged-process and isolated lifecycle gates passed, but it predates these source changes and is superseded. A fresh archive/build receipt/smoke/lifecycle seal, a disposable Windows-user or VM installer run, and a publisher-signed public build remain pending. These results establish repeatable software behavior; they do not establish clinical efficacy or replace evaluation with clinicians and lived-experience reviewers.
+
+## Asset provenance
+
+The warm-plum and light-blue mascot state sets were generated specifically for this project on 2026-08-24 using OpenAI's built-in image-generation tool. They are original working assets, contain no real person, and use no third-party trademark or character reference. The production set contains neutral, concerned, happy, and waving states for each appearance on solid local backgrounds; earlier source variants remain preserved outside the runtime selection. Final submission materials will disclose generated imagery.
+
+## Current track fit
+
+The strongest primary category is Mental Health. The same implemented evidence supports consideration for Responsible AI/Data Safety, Best AI/ML, Best Design, Innovation, and Public Vote where the final submission form permits those categories: a real local model pipeline, a bounded deterministic health-safety layer, encrypted local memory, explainable per-response provenance, accessibility controls, and reproducible adversarial evaluation are all present. Category eligibility and selections must still be confirmed in the final Devpost form before submission.

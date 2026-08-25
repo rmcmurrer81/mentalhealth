@@ -1,0 +1,5 @@
+release/*
+!release/cache/
+!release/cache/*.zip
+*.smoke.json
+verification/*.json
