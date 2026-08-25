@@ -15,13 +15,16 @@ import {
 } from "./lib/games";
 import { learnInterestSignals, mergeInterestPacks } from "./lib/interests";
 import { enhanceSteadyReply } from "./lib/local-model";
+import { nextMemoryGeneration, resolveWithProfileGenerations } from "./lib/memory-generation";
 import {
+  detachRecognitionHandlersBeforeStop,
   finalRecognitionTranscript,
   handsFreeStatus,
+  recognitionCallbackIsCurrent,
   recognitionErrorIsRecoverable,
   type RecognitionResultLike,
 } from "./lib/hands-free";
-import { birthdayForDate, clearProfile, defaultProfile, loadProfile, localDateKey, mergeMemories, saveProfile } from "./lib/memory";
+import { birthdayForDate, clearProfile, defaultProfile, forgetMemory, loadProfile, localDateKey, mergeMemories, saveProfile } from "./lib/memory";
 import { appendAffectCueEvidence } from "./lib/affect-cues";
 import {
   appointmentReminder,
@@ -43,6 +46,7 @@ import {
   type VaultRole,
   type VaultSession,
 } from "./lib/privacy-vault";
+import { PrivacySessionEpochGuard } from "./lib/privacy-session";
 import type { CompanionExpression, CompanionProfile, ConversationTurn, MemoryRecord } from "./lib/types";
 import { createLocalVoiceOutput, type VoiceOutput } from "./lib/voice";
 import { approvedVoicePreview } from "./lib/voice-preview";
@@ -71,6 +75,8 @@ const id = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const defaultConversationActions = ["Tell you my name", "Talk about today", "Play together", "See how memory works"];
 
 const openingTurn = (): ConversationTurn => ({
   id: id(),
@@ -129,7 +135,7 @@ function gamePromptActions(prompt: GamePrompt): string[] {
 
 export default function App() {
   const startsLockedRef = useRef(hasVault("primary"));
-  const [profile, setProfile] = useState<CompanionProfile>(() => {
+  const [profile, setProfileState] = useState<CompanionProfile>(() => {
     const loaded = startsLockedRef.current ? defaultProfile() : loadProfile();
     return ensureOpening(loaded, "primary");
   });
@@ -157,7 +163,7 @@ export default function App() {
   const [gameOpen, setGameOpen] = useState(false);
   const [gameSession, setGameSession] = useState<GameSession | null>(null);
   const [lastLearned, setLastLearned] = useState<MemoryRecord[]>([]);
-  const [actions, setActions] = useState<string[]>(["Tell you my name", "Talk about today", "Play together", "See how memory works"]);
+  const [actions, setActions] = useState<string[]>(() => [...defaultConversationActions]);
   const [showUrgent, setShowUrgent] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState("");
   const [modelNotice, setModelNotice] = useState("Deterministic offline core ready");
@@ -167,6 +173,14 @@ export default function App() {
   const voiceProcessingRef = useRef(false);
   const speakingRef = useRef(false);
   const modelBusyRef = useRef(false);
+  const profileRef = useRef(profile);
+  const lockedRef = useRef(startsLockedRef.current);
+  const memoryGenerationRef = useRef(0);
+  const privacySessionGuardRef = useRef(new PrivacySessionEpochGuard());
+  const accessRoleRef = useRef(accessRole);
+  const accessBusyRef = useRef(false);
+  const sendSequenceRef = useRef(0);
+  const activeSendRef = useRef<number | null>(null);
   const restartListeningTimerRef = useRef<number | null>(null);
   const speechStartTimerRef = useRef<number | null>(null);
   const startRecognitionRef = useRef<() => void | Promise<void>>(() => undefined);
@@ -179,7 +193,92 @@ export default function App() {
   const settingsDrawerRef = useRef<HTMLElement | null>(null);
   const gameDrawerRef = useRef<HTMLElement | null>(null);
 
+  profileRef.current = profile;
+  accessRoleRef.current = accessRole;
+
   if (!voiceOutputRef.current) voiceOutputRef.current = createLocalVoiceOutput(window.wellbeingDesktop?.localVoice);
+
+  function commitProfile(next: CompanionProfile) {
+    profileRef.current = next;
+    setProfileState(next);
+  }
+
+  function updateProfile(updater: (current: CompanionProfile) => CompanionProfile): CompanionProfile {
+    if (!profileMutationAllowed()) return profileRef.current;
+    const next = updater(profileRef.current);
+    commitProfile(next);
+    return next;
+  }
+
+  function finishActiveSend(sendToken: number): boolean {
+    if (activeSendRef.current !== sendToken) return false;
+    activeSendRef.current = null;
+    modelBusyRef.current = false;
+    setModelBusy(false);
+    return true;
+  }
+
+  function detachRecognitionInstance(recognition = recognitionRef.current, stop = true) {
+    if (!recognition) return;
+    detachRecognitionHandlersBeforeStop(recognition, () => {
+      if (recognitionRef.current === recognition) recognitionRef.current = null;
+    }, stop);
+  }
+
+  function quiesceConversationForPrivacyTransition(message: string) {
+    activeSendRef.current = null;
+    modelBusyRef.current = false;
+    setModelBusy(false);
+    handsFreeRef.current = false;
+    setHandsFree(false);
+    voiceProcessingRef.current = false;
+    if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
+    restartListeningTimerRef.current = null;
+    detachRecognitionInstance();
+    window.wellbeingDesktop?.disarmMicrophone();
+    setListening(false);
+    stopVoicePreview(false);
+    cancelSpokenReply(false);
+    setVoiceNotice(message);
+  }
+
+  function clearTransientConversationState() {
+    quiesceConversationForPrivacyTransition("");
+    setInput("");
+    setLastLearned([]);
+    setActions([...defaultConversationActions]);
+    setShowUrgent(false);
+    setExpression("neutral");
+    setGuiding(false);
+    setModelNotice("Deterministic offline core ready");
+    setVoiceNotice("");
+    setGameOpen(false);
+    setGameSession(null);
+    setListening(false);
+    setSpeaking(false);
+  }
+
+  function profileMutationAllowed(): boolean {
+    return !lockedRef.current
+      && privacySessionGuardRef.current.canMutateProfile()
+      && !accessBusyRef.current;
+  }
+
+  function beginAsyncPrivacyTransition(message: string): number | null {
+    if (accessBusyRef.current || privacySessionGuardRef.current.isTransitioning()) return null;
+    accessBusyRef.current = true;
+    setAccessBusy(true);
+    const token = privacySessionGuardRef.current.beginTransition();
+    quiesceConversationForPrivacyTransition(message);
+    return token;
+  }
+
+  function endAsyncPrivacyTransition(token: number, completed: boolean) {
+    if (completed) privacySessionGuardRef.current.completeTransition(token);
+    else privacySessionGuardRef.current.abortTransition(token);
+    accessBusyRef.current = false;
+    setAccessBusy(false);
+  }
 
   useEffect(() => {
     if (locked) return;
@@ -213,7 +312,7 @@ export default function App() {
     handsFreeRef.current = false;
     if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
     if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-    recognitionRef.current?.stop();
+    detachRecognitionInstance();
     window.wellbeingDesktop?.disarmMicrophone();
     voiceOutputRef.current?.dispose();
     const preview = previewAudioRef.current;
@@ -291,6 +390,10 @@ export default function App() {
   }
 
   function setSpokenRepliesEnabled(enabled: boolean) {
+    if (!profileMutationAllowed()) {
+      setVoiceNotice("Private-space protection is being updated. Voice settings will be available when it finishes.");
+      return;
+    }
     if (!enabled) {
       stopVoicePreview(true);
       cancelSpokenReply(true);
@@ -300,7 +403,7 @@ export default function App() {
     } else {
       setVoiceNotice("Spoken replies are enabled for a compatible local provider. Text always remains visible.");
     }
-    setProfile((current) => ({ ...current, speechEnabled: enabled }));
+    updateProfile((current) => ({ ...current, speechEnabled: enabled }));
   }
 
   function stopVoicePreview(resumeHandsFree: boolean) {
@@ -319,6 +422,10 @@ export default function App() {
   }
 
   function previewSelectedVoice() {
+    if (!profileMutationAllowed()) {
+      setVoiceNotice("Private-space protection is being updated. Voice preview will be available when it finishes.");
+      return;
+    }
     if (!selectedVoicePreview) {
       setVoiceNotice("This preset does not have an approved preview yet. No substitute voice was used.");
       return;
@@ -331,7 +438,7 @@ export default function App() {
     stopVoicePreview(false);
     if (handsFreeRef.current) {
       voiceProcessingRef.current = true;
-      recognitionRef.current?.stop();
+      detachRecognitionInstance();
       setListening(false);
     }
     const preview = new Audio(selectedVoicePreview.file);
@@ -368,21 +475,31 @@ export default function App() {
   async function send(raw: string, source: "typed" | "hands-free" = "typed") {
     const text = raw.trim();
     if (!text || modelBusyRef.current) return;
+    if (!profileMutationAllowed()) {
+      if (source === "hands-free") voiceProcessingRef.current = false;
+      setModelNotice("Private-space protection is being updated · no message was saved");
+      return;
+    }
     if (/^(?:play together|play another game|open games)[.!]?$/i.test(text)) {
       setGameOpen(true);
       return;
     }
     modelBusyRef.current = true;
     setModelBusy(true);
+    const sendToken = ++sendSequenceRef.current;
+    activeSendRef.current = sendToken;
     if (source === "hands-free") voiceProcessingRef.current = true;
     setInput("");
-    const deterministicReply = respond(text, profile);
+    const replyProfileAtStart = profileRef.current;
+    const capturedMemoryGeneration = memoryGenerationRef.current;
+    const capturedPrivacySessionGeneration = privacySessionGuardRef.current.capture();
+    const deterministicReply = respond(text, replyProfileAtStart);
 
     if (gameSession && /^(?:stop|end|quit)(?: the)? game[.!]?$/i.test(text)) {
       const now = new Date().toISOString();
       const gameReplyText = "Okay, we can stop here. There is no score you need to protect. We can talk, choose another game, or come back to this later.";
       setGameSession(null);
-      setProfile((current) => ({
+      updateProfile((current) => ({
         ...current,
         turns: [
           ...current.turns,
@@ -394,9 +511,7 @@ export default function App() {
       setLastLearned([]);
       setShowUrgent(false);
       setModelNotice("Offline game ended · no network used");
-      modelBusyRef.current = false;
-      setModelBusy(false);
-      queueSpokenReply(gameReplyText, source);
+      if (finishActiveSend(sendToken)) queueSpokenReply(gameReplyText, source);
       return;
     }
 
@@ -413,7 +528,7 @@ export default function App() {
         const nextPrompt = currentGamePrompt(nextSession);
         const now = new Date().toISOString();
         setGameSession(nextSession);
-        setProfile((current) => ({
+        updateProfile((current) => ({
           ...current,
           turns: [
             ...current.turns,
@@ -426,9 +541,7 @@ export default function App() {
         setShowUrgent(false);
         setExpression("happy");
         setModelNotice("Offline game · no network used");
-        modelBusyRef.current = false;
-        setModelBusy(false);
-        queueSpokenReply(gameReplyText, source);
+        if (finishActiveSend(sendToken)) queueSpokenReply(gameReplyText, source);
         return;
       }
       setGameSession(result.session);
@@ -436,17 +549,51 @@ export default function App() {
       setGameSession({ ...gameSession, status: "paused" });
     }
 
-    const enhancement = await enhanceSteadyReply(text, deterministicReply, profile.turns, window.wellbeingDesktop);
-    const reply = { ...deterministicReply, text: enhancement.text };
-    setModelNotice(enhancement.notice);
+    const resolvedReply = await resolveWithProfileGenerations(
+      capturedPrivacySessionGeneration,
+      () => privacySessionGuardRef.current.capture(),
+      capturedMemoryGeneration,
+      () => memoryGenerationRef.current,
+      async () => {
+        const enhancement = await enhanceSteadyReply(text, deterministicReply, replyProfileAtStart.turns, window.wellbeingDesktop);
+        return {
+          reply: { ...deterministicReply, text: enhancement.text },
+          replyProfile: replyProfileAtStart,
+          notice: enhancement.notice,
+        };
+      },
+      () => {
+        const currentProfile = profileRef.current;
+        return {
+          reply: respond(text, currentProfile),
+          replyProfile: currentProfile,
+          notice: "Memory changed while this reply was pending · refreshed without forgotten details",
+        };
+      },
+    );
+    if (resolvedReply.status === "discarded") {
+      if (finishActiveSend(sendToken) && source === "hands-free") {
+        voiceProcessingRef.current = false;
+        if (handsFreeRef.current) scheduleHandsFreeListening();
+      }
+      return;
+    }
+    const { reply, replyProfile, notice } = resolvedReply.value;
+    if (activeSendRef.current !== sendToken) return;
+    setModelNotice(notice);
     const groundedText = realRiskText(text).text;
-    const interestUpdates = profile.interestPacksEnabled ? learnInterestSignals(groundedText, profile.interests) : [];
+    const interestUpdates = replyProfile.interestPacksEnabled ? learnInterestSignals(groundedText, replyProfile.interests) : [];
     const carePlans = extractCarePlans(groundedText);
     setExpression(classifyExpression(text, reply.safetyLevel));
     if (/\b(?:hi|hello|good morning|good evening|great news|good news)\b/i.test(text)) {
       setWaving(true);
       window.setTimeout(() => setWaving(false), 3_500);
     }
+    const learnedMemoryIds = reply.learned.map((learned) => replyProfile.memories.find((saved) => (
+      saved.kind === learned.kind
+      && saved.label.trim().toLocaleLowerCase("en-US") === learned.label.trim().toLocaleLowerCase("en-US")
+      && saved.value.trim().toLocaleLowerCase("en-US") === learned.value.trim().toLocaleLowerCase("en-US")
+    ))?.id ?? learned.id);
     const userTurn: ConversationTurn = {
       id: id(),
       role: "user",
@@ -454,6 +601,7 @@ export default function App() {
       createdAt: new Date().toISOString(),
       safetyLevel: reply.safetyLevel,
       safetyContext: reply.safetyContext,
+      learnedMemoryIds,
     };
     const companionTurn: ConversationTurn = {
       id: id(),
@@ -462,23 +610,26 @@ export default function App() {
       createdAt: new Date().toISOString(),
       safetyLevel: reply.safetyLevel,
       safetyContext: reply.safetyContext,
+      groundedMemoryIds: [...new Set([...reply.usedMemoryIds, ...learnedMemoryIds])],
     };
     const learnedName = reply.learned.find((entry) => entry.kind === "identity")?.value;
-    setProfile((current) => ({
-      ...current,
-      preferredName: learnedName ?? current.preferredName,
-      memories: mergeMemories(current.memories, reply.learned),
-      medications: applyAdherenceSignal(mergeMedicationPlans(current.medications, carePlans.medications), groundedText),
-      appointments: mergeAppointmentPlans(current.appointments, carePlans.appointments),
-      interests: mergeInterestPacks(current.interests, interestUpdates),
-      affectCueEvidence: appendAffectCueEvidence(current.affectCueEvidence, reply.affectCueEvidence),
-      turns: [...current.turns, userTurn, companionTurn],
-    }));
+    updateProfile((current) => {
+      const next = {
+        ...current,
+        preferredName: learnedName ?? current.preferredName,
+        memories: mergeMemories(current.memories, reply.learned),
+        medications: applyAdherenceSignal(mergeMedicationPlans(current.medications, carePlans.medications), groundedText),
+        appointments: mergeAppointmentPlans(current.appointments, carePlans.appointments),
+        interests: mergeInterestPacks(current.interests, interestUpdates),
+        affectCueEvidence: appendAffectCueEvidence(current.affectCueEvidence, reply.affectCueEvidence),
+        turns: [...current.turns, userTurn, companionTurn],
+      };
+      return next;
+    });
     setLastLearned(reply.learned);
     setActions(reply.suggestedActions);
     setShowUrgent(reply.showUrgentOptions);
-    modelBusyRef.current = false;
-    setModelBusy(false);
+    if (!finishActiveSend(sendToken)) return;
     if (/60-second reset|breathe|breathing/i.test(text)) {
       setGuiding(true);
       window.setTimeout(() => setGuiding(false), 12_000);
@@ -487,12 +638,16 @@ export default function App() {
   }
 
   function announceGame(session: GameSession, introduction: string) {
+    if (!profileMutationAllowed()) {
+      setModelNotice("Private-space protection is being updated · the game was not changed");
+      return;
+    }
     const prompt = currentGamePrompt(session);
     if (!prompt) return;
     const announcement = `${introduction} ${gamePromptText(prompt)}`;
     const createdAt = new Date().toISOString();
     setGameSession(session);
-    setProfile((current) => ({
+    updateProfile((current) => ({
       ...current,
       turns: [...current.turns, { id: id(), role: "companion", text: announcement, createdAt, safetyLevel: "steady", safetyContext: "general" }],
     }));
@@ -540,7 +695,8 @@ export default function App() {
   }
 
   async function startRecognition() {
-    if (!handsFreeRef.current || recognitionRef.current || voiceProcessingRef.current || speakingRef.current) return;
+    if (!profileMutationAllowed() || !handsFreeRef.current || recognitionRef.current || voiceProcessingRef.current || speakingRef.current) return;
+    const requestedPrivacyEpoch = privacySessionGuardRef.current.capture();
     const Constructor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!Constructor) {
       handsFreeRef.current = false;
@@ -553,7 +709,15 @@ export default function App() {
     const microphoneArmed = window.wellbeingDesktop
       ? await window.wellbeingDesktop.armMicrophone().catch(() => false)
       : true;
-    if (!microphoneArmed || !handsFreeRef.current) {
+    if (
+      !profileMutationAllowed()
+      || privacySessionGuardRef.current.capture() !== requestedPrivacyEpoch
+      || !handsFreeRef.current
+    ) {
+      window.wellbeingDesktop?.disarmMicrophone();
+      return;
+    }
+    if (!microphoneArmed) {
       handsFreeRef.current = false;
       setHandsFree(false);
       setListening(false);
@@ -565,7 +729,17 @@ export default function App() {
     recognition.continuous = false;
     recognition.interimResults = true;
     recognition.lang = "en-US";
+    const recognitionPrivacyEpoch = privacySessionGuardRef.current.capture();
+    const callbackIsCurrent = () => recognitionCallbackIsCurrent({
+      recognition,
+      currentRecognition: recognitionRef.current,
+      capturedPrivacyEpoch: recognitionPrivacyEpoch,
+      currentPrivacyEpoch: privacySessionGuardRef.current.capture(),
+      handsFree: handsFreeRef.current,
+      locked: lockedRef.current,
+    });
     recognition.onresult = (event) => {
+      if (!callbackIsCurrent()) return;
       const transcript = Array.from(event.results)
         .map((result) => result[0].transcript)
         .join(" ");
@@ -573,19 +747,21 @@ export default function App() {
       const finalTranscript = finalRecognitionTranscript(event.results);
       if (finalTranscript) {
         voiceProcessingRef.current = true;
-        recognition.stop();
+        detachRecognitionInstance(recognition);
+        setListening(false);
         void send(finalTranscript, "hands-free");
       }
     };
     recognition.onend = () => {
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
+      if (!callbackIsCurrent()) return;
+      detachRecognitionInstance(recognition, false);
       setListening(false);
       if (!voiceProcessingRef.current) scheduleHandsFreeListening();
     };
     recognition.onerror = (event) => {
-      if (recognitionRef.current === recognition) recognitionRef.current = null;
+      if (!callbackIsCurrent()) return;
+      detachRecognitionInstance(recognition, false);
       setListening(false);
-      if (!handsFreeRef.current) return;
       if (recognitionErrorIsRecoverable(event.error)) {
         setVoiceNotice(event.error === "no-speech" ? "Still here. Listening again…" : "Listening is resuming…");
         scheduleHandsFreeListening(500);
@@ -602,7 +778,7 @@ export default function App() {
       setListening(true);
       setVoiceNotice("");
     } catch {
-      recognitionRef.current = null;
+      detachRecognitionInstance(recognition, false);
       setListening(false);
       scheduleHandsFreeListening(500);
     }
@@ -610,22 +786,33 @@ export default function App() {
   startRecognitionRef.current = () => void startRecognition();
 
   async function toggleListening() {
+    if (!profileMutationAllowed()) {
+      setVoiceNotice("Private-space protection is being updated. Hands-free talk will be available when it finishes.");
+      return;
+    }
     if (handsFreeRef.current) {
       handsFreeRef.current = false;
       setHandsFree(false);
       voiceProcessingRef.current = false;
       if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
       restartListeningTimerRef.current = null;
-      recognitionRef.current?.stop();
-      recognitionRef.current = null;
+      detachRecognitionInstance();
       window.wellbeingDesktop?.disarmMicrophone();
       setListening(false);
       setVoiceNotice("Hands-free talk stopped. You can keep typing.");
       return;
     }
+    const capturedPrivacySessionGeneration = privacySessionGuardRef.current.capture();
     const permissionGranted = window.wellbeingDesktop
       ? await window.wellbeingDesktop.requestHandsFreePermission().catch(() => false)
       : true;
+    if (
+      !profileMutationAllowed()
+      || privacySessionGuardRef.current.capture() !== capturedPrivacySessionGeneration
+    ) {
+      window.wellbeingDesktop?.disarmMicrophone();
+      return;
+    }
     if (!permissionGranted) {
       handsFreeRef.current = false;
       setHandsFree(false);
@@ -640,19 +827,49 @@ export default function App() {
   }
 
   function deleteMemory(memoryId: string) {
-    setProfile((current) => ({ ...current, memories: current.memories.filter((entry) => entry.id !== memoryId) }));
+    if (!profileMutationAllowed()) {
+      setAccessProblem("Private-space protection is being updated. Nothing was forgotten; try again when it finishes.");
+      return;
+    }
+    const current = profileRef.current;
+    if (!current.memories.some((entry) => entry.id === memoryId)) return;
+    const forgotten = forgetMemory(current, memoryId);
+    memoryGenerationRef.current = nextMemoryGeneration(memoryGenerationRef.current);
+    commitProfile(forgotten);
+    setLastLearned([]);
+    if (modelBusyRef.current) {
+      setModelNotice("Memory forgotten · the pending reply will be refreshed before it is shown");
+    }
   }
 
   function deleteAffectCueEvidence(evidenceId: string) {
-    setProfile((current) => ({
+    if (!profileMutationAllowed()) {
+      setAccessProblem("Private-space protection is being updated. Nothing was forgotten; try again when it finishes.");
+      return;
+    }
+    updateProfile((current) => ({
       ...current,
       affectCueEvidence: current.affectCueEvidence.filter((entry) => entry.id !== evidenceId),
     }));
   }
 
   function changeVoice(voice: CompanionProfile["voice"]) {
+    if (!profileMutationAllowed()) {
+      setVoiceNotice("Private-space protection is being updated. Voice settings will be available when it finishes.");
+      return;
+    }
     stopVoicePreview(true);
-    setProfile((current) => ({ ...current, voice }));
+    updateProfile((current) => ({ ...current, voice }));
+  }
+
+  function setLearningEnabled(enabled: boolean) {
+    if (!profileMutationAllowed()) return;
+    updateProfile((current) => ({ ...current, learningEnabled: enabled }));
+  }
+
+  function setInterestPacksEnabled(enabled: boolean) {
+    if (!profileMutationAllowed()) return;
+    updateProfile((current) => ({ ...current, interestPacksEnabled: enabled }));
   }
 
   function handleDrawerKeyDown(event: KeyboardEvent<HTMLElement>) {
@@ -685,25 +902,34 @@ export default function App() {
       setAccessProblem("The two personal passwords do not match.");
       return;
     }
-    setAccessBusy(true);
+    const transitionToken = beginAsyncPrivacyTransition("Private-space protection is being enabled. Hands-free talk is paused until it finishes.");
+    if (transitionToken === null) return;
+    const profileSnapshot = profileRef.current;
+    const passwordSnapshot = newPassword;
+    let completed = false;
     try {
-      const created = await createVault(profile, newPassword, "primary");
+      const created = await createVault(profileSnapshot, passwordSnapshot, "primary");
+      if (privacySessionGuardRef.current.capture() !== transitionToken || !privacySessionGuardRef.current.isTransitioning()) {
+        throw new Error("The private-space transition changed before encryption finished.");
+      }
       saveVaultEnvelope(created.envelope);
       clearProfile();
       vaultSessionRef.current = created.session;
+      commitProfile(profileSnapshot);
       setPrivacyConfigured(true);
       setNewPassword("");
       setConfirmPassword("");
+      completed = true;
     } catch (error) {
       setAccessProblem(error instanceof Error ? error.message : "The privacy lock could not be enabled.");
     } finally {
-      setAccessBusy(false);
+      endAsyncPrivacyTransition(transitionToken, completed);
     }
   }
 
   async function enableGuardianSpace() {
     setAccessProblem("");
-    if (accessRole !== "primary" || !privacyConfigured) {
+    if (accessRoleRef.current !== "primary" || !privacyConfigured) {
       setAccessProblem("Unlock the primary space before configuring guardian access.");
       return;
     }
@@ -711,62 +937,80 @@ export default function App() {
       setAccessProblem("The two guardian passwords do not match.");
       return;
     }
-    setAccessBusy(true);
+    const transitionToken = beginAsyncPrivacyTransition("Guardian-space protection is being created. Conversation is paused until it finishes.");
+    if (transitionToken === null) return;
+    const currentProfileSnapshot = profileRef.current;
+    const passwordSnapshot = guardianPassword;
+    let completed = false;
     try {
       const guardianProfile = ensureOpening(defaultProfile(), "guardian");
-      const created = await createVault(guardianProfile, guardianPassword, "guardian");
+      const created = await createVault(guardianProfile, passwordSnapshot, "guardian");
+      if (privacySessionGuardRef.current.capture() !== transitionToken || !privacySessionGuardRef.current.isTransitioning()) {
+        throw new Error("The guardian-space transition changed before encryption finished.");
+      }
       saveVaultEnvelope(created.envelope);
+      commitProfile(currentProfileSnapshot);
       setGuardianConfigured(true);
       setGuardianPassword("");
       setGuardianConfirmPassword("");
+      completed = true;
     } catch (error) {
       setAccessProblem(error instanceof Error ? error.message : "Guardian space could not be enabled.");
     } finally {
-      setAccessBusy(false);
+      endAsyncPrivacyTransition(transitionToken, completed);
     }
   }
 
   function lockNow() {
-    handsFreeRef.current = false;
-    setHandsFree(false);
-    recognitionRef.current?.stop();
-    recognitionRef.current = null;
-    window.wellbeingDesktop?.disarmMicrophone();
-    cancelSpokenReply(false);
+    if (accessBusyRef.current) return;
+    lockedRef.current = true;
+    privacySessionGuardRef.current.replaceSession();
+    clearTransientConversationState();
     vaultSessionRef.current = null;
     vaultWriteVersionRef.current += 1;
-    setSpeaking(false);
-    setListening(false);
-    setProfile(ensureOpening(defaultProfile(), "primary"));
+    setAccessProblem("");
+    commitProfile(ensureOpening(defaultProfile(), "primary"));
+    accessRoleRef.current = "primary";
     setAccessRole("primary");
     setUnlockRole("primary");
     setUnlockPassword("");
     setSettingsOpen(false);
     setMemoryOpen(false);
-    setGameOpen(false);
-    setGameSession(null);
     setLocked(true);
   }
 
   async function unlockSelectedSpace() {
     setAccessProblem("");
-    const envelope = loadVaultEnvelope(unlockRole);
+    if (accessBusyRef.current) return;
+    const targetRole = unlockRole;
+    const passwordSnapshot = unlockPassword;
+    const envelope = loadVaultEnvelope(targetRole);
     if (!envelope) {
       setAccessProblem("That private space is not configured on this device.");
       return;
     }
-    setAccessBusy(true);
+    const transitionToken = beginAsyncPrivacyTransition("Opening the selected private space. Earlier pending work cannot cross this boundary.");
+    if (transitionToken === null) return;
+    let completed = false;
     try {
-      const opened = await openVault(envelope, unlockPassword, unlockRole);
+      const opened = await openVault(envelope, passwordSnapshot, targetRole);
+      if (privacySessionGuardRef.current.capture() !== transitionToken || !privacySessionGuardRef.current.isTransitioning()) {
+        throw new Error("The private-space transition changed before unlocking finished.");
+      }
+      const openedProfile = ensureOpening(opened.profile, targetRole);
       vaultSessionRef.current = opened.session;
-      setAccessRole(unlockRole);
-      setProfile(ensureOpening(opened.profile, unlockRole));
+      accessRoleRef.current = targetRole;
+      setAccessRole(targetRole);
+      commitProfile(openedProfile);
+      clearTransientConversationState();
       setUnlockPassword("");
+      lockedRef.current = false;
       setLocked(false);
+      completed = true;
     } catch (error) {
       setAccessProblem(error instanceof Error ? error.message : "The private space could not be opened.");
     } finally {
-      setAccessBusy(false);
+      endAsyncPrivacyTransition(transitionToken, completed);
     }
   }
 
@@ -781,12 +1025,12 @@ export default function App() {
           <fieldset className="role-picker">
             <legend>Private space</legend>
             <label className={unlockRole === "primary" ? "selected" : ""}>
-              <input type="radio" name="unlock-role" checked={unlockRole === "primary"} onChange={() => setUnlockRole("primary")} />
+              <input type="radio" name="unlock-role" checked={unlockRole === "primary"} disabled={accessBusy} onChange={() => setUnlockRole("primary")} />
               <span><strong>My companion</strong><small>Primary private memories</small></span>
             </label>
             {guardianConfigured && (
               <label className={unlockRole === "guardian" ? "selected" : ""}>
-                <input type="radio" name="unlock-role" checked={unlockRole === "guardian"} onChange={() => setUnlockRole("guardian")} />
+                <input type="radio" name="unlock-role" checked={unlockRole === "guardian"} disabled={accessBusy} onChange={() => setUnlockRole("guardian")} />
                 <span><strong>Parent or guardian</strong><small>Separate guardian conversation</small></span>
               </label>
             )}
@@ -797,6 +1041,7 @@ export default function App() {
               type="password"
               autoComplete="current-password"
               value={unlockPassword}
+              disabled={accessBusy}
               onChange={(event) => setUnlockPassword(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") void unlockSelectedSpace(); }}
             />
@@ -833,7 +1078,7 @@ export default function App() {
           </div>
           <div className="top-actions">
             {accessRole === "guardian" && <span className="role-chip">Guardian space</span>}
-            <button className={`icon-button ${profile.speechEnabled ? "" : "muted"}`} onClick={() => setSpokenRepliesEnabled(!profile.speechEnabled)} aria-pressed={!profile.speechEnabled} aria-label={profile.speechEnabled ? "Mute spoken replies" : "Turn on spoken replies"}>{profile.speechEnabled ? "◖))" : "◖×"}</button>
+            <button className={`icon-button ${profile.speechEnabled ? "" : "muted"}`} disabled={accessBusy} onClick={() => setSpokenRepliesEnabled(!profile.speechEnabled)} aria-pressed={!profile.speechEnabled} aria-label={profile.speechEnabled ? "Mute spoken replies" : "Turn on spoken replies"}>{profile.speechEnabled ? "◖))" : "◖×"}</button>
             <button className="avatar-button" onClick={() => setSettingsOpen(true)} aria-label="Open settings">{profile.preferredName?.[0]?.toUpperCase() ?? "ME"}</button>
           </div>
         </header>
@@ -881,13 +1126,13 @@ export default function App() {
               </div>
             )}
 
-            <div className="quick-actions">{actions.map((action) => <button key={action} disabled={modelBusy} onClick={() => /^(?:play together|play another game)$/i.test(action) ? setGameOpen(true) : void send(action)}>{action}</button>)}</div>
+            <div className="quick-actions">{actions.map((action) => <button key={action} disabled={modelBusy || accessBusy} onClick={() => /^(?:play together|play another game)$/i.test(action) ? setGameOpen(true) : void send(action)}>{action}</button>)}</div>
 
             <form className="composer" onSubmit={submit}>
-              <button type="button" className={`mic-button ${handsFree ? "live" : ""}`} onClick={() => void toggleListening()} aria-pressed={handsFree} aria-label={handsFree ? "Stop hands-free conversation" : "Start hands-free conversation"}>{handsFree ? "■" : "●"}</button>
+              <button type="button" className={`mic-button ${handsFree ? "live" : ""}`} disabled={accessBusy} onClick={() => void toggleListening()} aria-pressed={handsFree} aria-label={handsFree ? "Stop hands-free conversation" : "Start hands-free conversation"}>{handsFree ? "■" : "●"}</button>
               <label className="sr-only" htmlFor="message">Message</label>
-              <textarea id="message" value={input} disabled={modelBusy} onChange={(event) => setInput(event.target.value)} placeholder={modelBusy ? "Thinking locally…" : "Say what’s on your mind…"} rows={2} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input); } }} />
-              <button className="send-button" type="submit" disabled={modelBusy} aria-label={modelBusy ? "Preparing response" : "Send message"}>{modelBusy ? "…" : "↑"}</button>
+              <textarea id="message" value={input} disabled={modelBusy || accessBusy} onChange={(event) => setInput(event.target.value)} placeholder={accessBusy ? "Private-space protection is being updated…" : modelBusy ? "Thinking locally…" : "Say what’s on your mind…"} rows={2} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(input); } }} />
+              <button className="send-button" type="submit" disabled={modelBusy || accessBusy} aria-label={accessBusy ? "Private-space protection is being updated" : modelBusy ? "Preparing response" : "Send message"}>{modelBusy || accessBusy ? "…" : "↑"}</button>
             </form>
             <p className="voice-status" aria-live="polite">{voiceNotice || handsFreeStatus({ enabled: handsFree, listening, speaking })}</p>
             <p className={`model-receipt${modelBusy ? " active" : ""}`} aria-live="polite"><span className="status-dot" />{modelBusy ? "Checking the local model behind the safety gate…" : modelNotice}</p>
@@ -901,7 +1146,7 @@ export default function App() {
             )) : (
               <div className="empty-reminders"><span>✓</span><h4>Nothing pressing.</h4><p>Saved appointments and prescribed-medication schedules can appear here. Reliable routines get quieter reminders.</p></div>
             )}
-            <div className="reset-card"><p className="eyebrow">60-SECOND RESET</p><h4>Lower the volume, not your feelings.</h4><p>Breathe in gently for four. Let the exhale take six. Repeat only if it feels comfortable.</p><button disabled={modelBusy} onClick={() => void send("Let's do the 60-second reset")}>Begin together →</button></div>
+            <div className="reset-card"><p className="eyebrow">60-SECOND RESET</p><h4>Lower the volume, not your feelings.</h4><p>Breathe in gently for four. Let the exhale take six. Repeat only if it feels comfortable.</p><button disabled={modelBusy || accessBusy} onClick={() => void send("Let's do the 60-second reset")}>Begin together →</button></div>
           </aside>
         </div>
       </main>
@@ -938,17 +1183,17 @@ export default function App() {
       <aside ref={memoryDrawerRef} role="dialog" aria-modal="true" className={`drawer ${memoryOpen ? "open" : ""}`} aria-hidden={!memoryOpen} inert={!memoryOpen} aria-label="Private memory shelf" onKeyDown={handleDrawerKeyDown}>
         <button className="drawer-close" onClick={() => setMemoryOpen(false)} aria-label="Close memory">×</button>
         <p className="eyebrow">PRIVATE MEMORY SHELF</p><h2>What I remember.</h2>
-        <p>{privacyConfigured ? "These notes are encrypted in this device’s private vault. Remove any one without deleting everything." : "These notes are stored only in this device profile. Remove any one without deleting everything."}</p>
+        <p>{privacyConfigured ? "These notes are encrypted in this device’s private vault." : "These notes are stored only in this device profile."} Forgetting one also removes transcript turns that created, quoted, or directly used it; unrelated conversation stays.</p>
         <div className="memory-list">
           {profile.memories.length === 0 ? <div className="empty-memory">Nothing remembered yet. Start naturally; you will not be interrupted by constant permission prompts.</div> : profile.memories.map((entry) => (
-            <article key={entry.id} className="memory-item"><div><span>{entry.kind}</span><strong>{entry.label}</strong><p>{entry.value}</p></div><button onClick={() => deleteMemory(entry.id)} aria-label={`Forget ${entry.label}`}>Forget</button></article>
+            <article key={entry.id} className="memory-item"><div><span>{entry.kind}</span><strong>{entry.label}</strong><p>{entry.value}</p></div><button disabled={accessBusy} onClick={() => deleteMemory(entry.id)} aria-label={`Forget ${entry.label}`}>Forget</button></article>
           ))}
         </div>
         <h3>Why I checked in</h3>
         <p>These bounded receipts explain a tentative pattern check. They store turn references and word counts—not a hidden emotion label, diagnosis, or copy of your message.</p>
         <div className="memory-list" aria-label="Affect check-in evidence">
           {profile.affectCueEvidence.length === 0 ? <div className="empty-memory">No tentative check-in receipts yet.</div> : profile.affectCueEvidence.slice(-6).reverse().map((entry) => (
-            <article key={entry.id} className="memory-item"><div><span>{entry.status}</span><strong>{entry.basis.replaceAll("-", " ")}</strong><p>{entry.baselineSampleSize} baseline turns · recent word counts {entry.recentWordCounts.join(", ") || "none"} · no emotion label stored</p></div><button onClick={() => deleteAffectCueEvidence(entry.id)} aria-label="Forget this check-in receipt">Forget</button></article>
+            <article key={entry.id} className="memory-item"><div><span>{entry.status}</span><strong>{entry.basis.replaceAll("-", " ")}</strong><p>{entry.baselineSampleSize} baseline turns · recent word counts {entry.recentWordCounts.join(", ") || "none"} · no emotion label stored</p></div><button disabled={accessBusy} onClick={() => deleteAffectCueEvidence(entry.id)} aria-label="Forget this check-in receipt">Forget</button></article>
           ))}
         </div>
       </aside>
@@ -956,26 +1201,26 @@ export default function App() {
       <aside ref={settingsDrawerRef} role="dialog" aria-modal="true" className={`drawer ${settingsOpen ? "open" : ""}`} aria-hidden={!settingsOpen} inert={!settingsOpen} aria-label="Settings" onKeyDown={handleDrawerKeyDown}>
         <button className="drawer-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button>
         <p className="eyebrow">SETTINGS</p><h2>Make the companion yours.</h2>
-        {accessRole === "guardian" && <div className="guardian-banner"><strong>Guardian space</strong><p>This is a separate conversation. Primary-user memories and transcripts are not available here.</p><button className="secondary-action" type="button" onClick={lockNow}>Lock guardian space</button></div>}
+        {accessRole === "guardian" && <div className="guardian-banner"><strong>Guardian space</strong><p>This is a separate conversation. Primary-user memories and transcripts are not available here.</p><button className="secondary-action" type="button" disabled={accessBusy} onClick={lockNow}>Lock guardian space</button></div>}
         <fieldset className="voice-choices"><legend>Local voice preset and appearance</legend>
-          <label className={profile.voice === "soft-feminine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "soft-feminine"} onChange={() => changeVoice("soft-feminine")} /><img src="/companion-warm-plum-v2-solid.png" alt="Warm plum companion" /><span><strong>Soft feminine</strong>Welcoming default</span></label>
-          <label className={profile.voice === "warm-neutral" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "warm-neutral"} onChange={() => changeVoice("warm-neutral")} /><img src="/companion-warm-plum-v2-solid.png" alt="Warm plum companion" /><span><strong>Warm neutral</strong>Future preset · text only</span></label>
-          <label className={profile.voice === "calm-masculine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "calm-masculine"} onChange={() => changeVoice("calm-masculine")} /><img src="/companion-light-blue-v2-solid.png" alt="Light blue companion" /><span><strong>Calm masculine</strong>Lower, steady tone</span></label>
+          <label className={profile.voice === "soft-feminine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "soft-feminine"} disabled={accessBusy} onChange={() => changeVoice("soft-feminine")} /><img src="/companion-warm-plum-v2-solid.png" alt="Warm plum companion" /><span><strong>Soft feminine</strong>Welcoming default</span></label>
+          <label className={profile.voice === "warm-neutral" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "warm-neutral"} disabled={accessBusy} onChange={() => changeVoice("warm-neutral")} /><img src="/companion-warm-plum-v2-solid.png" alt="Warm plum companion" /><span><strong>Warm neutral</strong>Future preset · text only</span></label>
+          <label className={profile.voice === "calm-masculine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "calm-masculine"} disabled={accessBusy} onChange={() => changeVoice("calm-masculine")} /><img src="/companion-light-blue-v2-solid.png" alt="Light blue companion" /><span><strong>Calm masculine</strong>Lower, steady tone</span></label>
         </fieldset>
         <div className="voice-preview-panel">
-          <button type="button" onClick={previewSelectedVoice} disabled={!profile.speechEnabled || !selectedVoicePreview}>Preview selected voice</button>
+          <button type="button" onClick={previewSelectedVoice} disabled={accessBusy || !profile.speechEnabled || !selectedVoicePreview}>Preview selected voice</button>
           <small>{selectedVoicePreview ? `${selectedVoicePreview.productLabel} · approved static sample` : "No approved sample for this preset yet"}</small>
           <p>This previews one reviewed recording only. Live generated replies remain text-only until the local voice provider is ready.</p>
         </div>
-        <label className="toggle-row"><span><strong>Spoken replies</strong><small>Text always remains visible · no system-voice fallback</small></span><input type="checkbox" checked={profile.speechEnabled} onChange={(event) => setSpokenRepliesEnabled(event.target.checked)} /></label>
-        <label className="toggle-row"><span><strong>Learn from conversation</strong><small>On by default; pause new memories without erasing saved ones</small></span><input type="checkbox" checked={profile.learningEnabled} onChange={(event) => setProfile((current) => ({ ...current, learningEnabled: event.target.checked }))} /></label>
-        <label className="toggle-row"><span><strong>Interest knowledge packs</strong><small>On by default; remember favorites and use spoiler-aware, sourced facts</small></span><input type="checkbox" checked={profile.interestPacksEnabled} onChange={(event) => setProfile((current) => ({ ...current, interestPacksEnabled: event.target.checked }))} /></label>
+        <label className="toggle-row"><span><strong>Spoken replies</strong><small>Text always remains visible · no system-voice fallback</small></span><input type="checkbox" checked={profile.speechEnabled} disabled={accessBusy} onChange={(event) => setSpokenRepliesEnabled(event.target.checked)} /></label>
+        <label className="toggle-row"><span><strong>Learn from conversation</strong><small>On by default; pause new memories without erasing saved ones</small></span><input type="checkbox" checked={profile.learningEnabled} disabled={accessBusy} onChange={(event) => setLearningEnabled(event.target.checked)} /></label>
+        <label className="toggle-row"><span><strong>Interest knowledge packs</strong><small>On by default; remember favorites and use spoiler-aware, sourced facts</small></span><input type="checkbox" checked={profile.interestPacksEnabled} disabled={accessBusy} onChange={(event) => setInterestPacksEnabled(event.target.checked)} /></label>
         {accessRole === "primary" && !privacyConfigured && (
           <section className="privacy-settings" aria-labelledby="privacy-heading">
             <h3 id="privacy-heading">Optional privacy password</h3>
             <p>Useful in a shared home. It is off by default, so people who live alone are not asked for a password.</p>
-            <label className="secure-field"><span>New password</span><input type="password" autoComplete="new-password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} /></label>
-            <label className="secure-field"><span>Confirm password</span><input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
+            <label className="secure-field"><span>New password</span><input type="password" autoComplete="new-password" value={newPassword} disabled={accessBusy} onChange={(event) => setNewPassword(event.target.value)} /></label>
+            <label className="secure-field"><span>Confirm password</span><input type="password" autoComplete="new-password" value={confirmPassword} disabled={accessBusy} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
             <button className="secondary-action" type="button" disabled={accessBusy || !newPassword || !confirmPassword} onClick={() => void enablePrivacyLock()}>{accessBusy ? "Encrypting…" : "Enable encrypted privacy lock"}</button>
           </section>
         )}
@@ -983,20 +1228,20 @@ export default function App() {
           <section className="privacy-settings" aria-labelledby="privacy-heading">
             <h3 id="privacy-heading">Encrypted privacy lock is on</h3>
             <p>Conversation and memory are encrypted at rest. Locking clears the open key and decrypted profile from this screen.</p>
-            <button className="secondary-action" type="button" onClick={lockNow}>Lock now</button>
+            <button className="secondary-action" type="button" disabled={accessBusy} onClick={lockNow}>Lock now</button>
             {!guardianConfigured ? (
               <div className="guardian-setup">
                 <h4>Optional parent or legal-guardian space</h4>
                 <p>Create a separate login. It does not unlock or reveal the primary user’s private conversation.</p>
-                <label className="secure-field"><span>Guardian password</span><input type="password" autoComplete="new-password" value={guardianPassword} onChange={(event) => setGuardianPassword(event.target.value)} /></label>
-                <label className="secure-field"><span>Confirm guardian password</span><input type="password" autoComplete="new-password" value={guardianConfirmPassword} onChange={(event) => setGuardianConfirmPassword(event.target.value)} /></label>
+                <label className="secure-field"><span>Guardian password</span><input type="password" autoComplete="new-password" value={guardianPassword} disabled={accessBusy} onChange={(event) => setGuardianPassword(event.target.value)} /></label>
+                <label className="secure-field"><span>Confirm guardian password</span><input type="password" autoComplete="new-password" value={guardianConfirmPassword} disabled={accessBusy} onChange={(event) => setGuardianConfirmPassword(event.target.value)} /></label>
                 <button className="secondary-action" type="button" disabled={accessBusy || !guardianPassword || !guardianConfirmPassword} onClick={() => void enableGuardianSpace()}>{accessBusy ? "Creating…" : "Create separate guardian space"}</button>
               </div>
             ) : <p className="configured-note">✓ Separate guardian access is configured on this device.</p>}
           </section>
         )}
         {accessProblem && <p className="access-problem" role="alert">{accessProblem}</p>}
-        <div className="safety-note"><strong>Memory defaults to on—and stays local.</strong><p>Automatic memory prevents repetitive permission prompts. You can review or forget individual memories at any time.</p></div>
+        <div className="safety-note"><strong>Memory defaults to on—and stays local.</strong><p>Automatic memory prevents repetitive permission prompts. When you forget a memory, the app also removes transcript turns that created, quoted, or directly used that memory; unrelated conversation remains.</p></div>
       </aside>
 
       <details className={`safety-corner${showUrgent ? " attention" : ""}`}>

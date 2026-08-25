@@ -37,6 +37,10 @@ export interface ConversationTurn {
   createdAt: string;
   safetyLevel: SafetyLevel;
   safetyContext?: SafetyContext;
+  /** Memory records learned directly from this turn. Used for precise local deletion. */
+  learnedMemoryIds?: string[];
+  /** Memory records that directly grounded this reply. Used for precise local deletion. */
+  groundedMemoryIds?: string[];
 }
 
 export interface AffectCueEvidence {

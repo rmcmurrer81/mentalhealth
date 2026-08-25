@@ -129,10 +129,16 @@ boundaries, shortcuts, the uninstall key, and reparse points before deletion.
   is fail-closed and its shipped provider is inactive; real synthesis and audible
   playback are not connected or claimed. A later provider integration requires a
   rebuild, full end-to-end listening checks, and a new package seal.
-- The current sealed development archive includes the provider-neutral renderer,
-  inactive fail-closed local-voice broker, and approved static previews. Use only
-  the exact ZIP with its matching SHA-256 sidecar and external receipt, and rebuild
-  after any source change.
+- The prior sealed development archive includes the provider-neutral renderer,
+  inactive fail-closed local-voice broker, and approved static previews, but it
+  predates and does not contain the current multi-clause memory extraction,
+  deterministic recall, provenance-linked transcript forgetting and Nina collision
+  fix, in-flight Forget reply refresh, or privacy-session/vault-transition race
+  fixes. It also predates the buffered speech-recognition callback isolation that
+  binds callbacks to the exact unlocked privacy session. It is superseded package
+  evidence, not the current source package. Use its exact ZIP only with the matching
+  SHA-256 sidecar and external receipt; rebuild and reseal before distributing the
+  current source.
 - Optional Ollama wording is not a clinical model and does not replace the
   deterministic safety classifier or response validator.
 - No hosted URL, public repository, cloud AI, email connector, upload, or hackathon

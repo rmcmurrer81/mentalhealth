@@ -7,6 +7,7 @@ import {
   localDateKey,
   mergeMemories,
   parseBirthdayAgeMemory,
+  personNameFromMemoryValue,
   statedBirthdayAge,
 } from "./memory";
 import { evaluateAffectCue } from "./affect-cues";
@@ -28,13 +29,59 @@ function pickPositivePreference(memories: MemoryRecord[]): MemoryRecord | undefi
   return [...memories].reverse().find((entry) => entry.kind === "preference" && entry.label !== "avoid");
 }
 
+function displayPersonName(name: string): string {
+  return `${name.charAt(0).toLocaleUpperCase("en-US")}${name.slice(1)}`;
+}
+
 function pickMentionedPerson(text: string, memories: MemoryRecord[]): MemoryRecord | undefined {
   const people = [...memories].reverse().filter((entry) => entry.kind === "person");
   return people.find((entry) => {
     if (new RegExp(`\\b${entry.label.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(text)) return true;
-    const names = entry.value.match(/\b[A-Z][A-Za-z'-]{1,40}\b/g) ?? [];
-    return names.some((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(text));
+    const name = personNameFromMemoryValue(entry.value);
+    return Boolean(name && new RegExp(`\\b${name.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(text));
   });
+}
+
+function memoryRecallReply(text: string, profile: CompanionProfile): { text: string; used: string[]; actions: string[] } | null {
+  const asksForPreference = /\b(?:what do i like|what (?:do you remember|have i told you)(?: that)? i like|what (?:are|is) my (?:interests?|preferences?|favorites?))\b/i.test(text);
+  const requestedPerson = /\bwho (?:is|are) my (?:favorite|favourite)\b/i.test(text)
+    ? undefined
+    : /\bwho (?:is|are)\s+(?:my\s+)?([A-Za-z][A-Za-z'-]{1,40})\b/i.exec(text)?.[1];
+  if (!asksForPreference && !requestedPerson) return null;
+
+  const parts: string[] = [];
+  const used = new Set<string>();
+  if (asksForPreference) {
+    const preference = pickPositivePreference(profile.memories);
+    if (preference) {
+      parts.push(`I remember that you like ${preference.value}.`);
+      used.add(preference.id);
+    } else {
+      parts.push("I don't have a saved preference yet, so I don't want to guess.");
+    }
+  }
+
+  if (requestedPerson) {
+    const person = pickMentionedPerson(requestedPerson, profile.memories);
+    if (person) {
+      const candidateName = personNameFromMemoryValue(person.value);
+      const savedName = candidateName?.toLowerCase() === requestedPerson.toLowerCase() ? candidateName : undefined;
+      if (savedName) {
+        parts.push(`${displayPersonName(savedName)} is your ${person.label}. You told me ${person.value}.`);
+      } else {
+        parts.push(`You told me that your ${person.label} ${person.value}.`);
+      }
+      used.add(person.id);
+    } else {
+      parts.push(`I don't have a saved detail identifying ${requestedPerson}, so I don't want to make one up.`);
+    }
+  }
+
+  return {
+    text: parts.join(" "),
+    used: [...used],
+    actions: ["Add more context", "Correct a memory", "Review private memory"],
+  };
 }
 
 function birthdayGreetingAlreadyShared(profile: CompanionProfile, now: Date): boolean {
@@ -158,6 +205,9 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
       actions: ["Make a card together", "Choose a simple craft", `Talk about my ${relationship}`, "Plan for almost no cost"],
     };
   }
+
+  const recall = memoryRecallReply(text, profile);
+  if (recall) return recall;
 
   if (interestSupport) {
     return { text: interestSupport.text, used: [], actions: interestSupport.actions };

@@ -43,7 +43,7 @@ describe("production voice lifecycle wiring", () => {
     expect(preview).toContain("cancelSpokenReply(false)");
     expect(preview).toContain("stopVoicePreview(false)");
     expect(preview).toContain("voiceProcessingRef.current = true");
-    expect(preview).toContain("recognitionRef.current?.stop()");
+    expect(preview).toContain("detachRecognitionInstance()");
     expect(preview).toContain("new Audio(selectedVoicePreview.file)");
     expect(preview).not.toContain("voiceOutputRef.current?.speak");
   });

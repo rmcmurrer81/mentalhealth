@@ -47,6 +47,19 @@ describe("steady-only local model enhancement", () => {
     expect(decision.text).toBe(reply.text);
   });
 
+  it.each([
+    ["What do I like?", "I don't have a saved preference yet, so I don't want to guess."],
+    ["Who is Jordan?", "I don't have a saved detail identifying Jordan, so I don't want to make one up."],
+  ])("keeps a missing-memory answer deterministic: %s", async (text, exactReply) => {
+    const model = bridge("I invented a confident answer.");
+    const reply = respond(text, defaultProfile());
+    const decision = await enhanceSteadyReply(text, reply, [], model);
+
+    expect(reply.text).toBe(exactReply);
+    expect(decision).toMatchObject({ status: "not-applicable", text: exactReply });
+    expect(model.localModel.enhanceSteadyReply).not.toHaveBeenCalled();
+  });
+
   it("redacts contact details and drops health-shaped history", () => {
     const turns: ConversationTurn[] = [
       { id: "1", role: "user", text: "Email me at riley@example.com or 212-555-0101", createdAt: "2026-08-24T20:00:00Z", safetyLevel: "steady" },

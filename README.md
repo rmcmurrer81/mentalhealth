@@ -9,7 +9,9 @@ An original, local-first wellbeing companion for Hack for Humanity | Summer 2026
 - an honest synthetic-friend relationship frame for people who want companionship, without pretending the companion is biological, demanding exclusivity, or making continued conversation conditional on contacting somebody else;
 - natural birthday memory that resolves relative dates against the local calendar, confirms the exact date understood, replaces corrected dates, and offers one annual greeting when the app is opened or used on that date;
 - default-on learning with a single Settings switch that pauses new learning without erasing saved memories;
-- visible per-memory review and deletion without repetitive permission prompts;
+- visible per-memory review and deletion without repetitive permission prompts; forgetting a memory also removes transcript turns that created, quoted, or directly used that memory while retaining unrelated conversation, including unrelated turns that merely share a person's given name;
+- a memory-generation guard that detects Forget during a pending local-model reply, discards the stale result, and recomputes from the post-forget profile before any reply is shown or saved;
+- a separate privacy-session epoch that quiesces hands-free output and invalidates an entire pending send across lock, unlock, same-profile relock, guardian-role replacement, or vault creation; vault sealing blocks conversation, Forget, and profile-setting mutation until the exact captured profile is encrypted, so stale transcript, memory, and care-plan data cannot cross private spaces;
 - an optional password-protected AES-256-GCM private vault; it is off by default for people who live alone;
 - a cryptographically separate parent/legal-guardian space that cannot read the primary user’s private memories or transcript;
 - default-on interest knowledge packs for Miraculous and My Little Pony, including favorite-character memory, series progress, spoiler gating, source links, and a realistic “character values without powers or money” decision lens;
@@ -19,7 +21,7 @@ An original, local-first wellbeing companion for Hack for Humanity | Summer 2026
 - personalized boredom, low-energy, anger, relationship, and distress conversation paths;
 - tentative affect cues that can notice a sustained change from the person's recent communication pattern, ask whether that reading is correct, and back off immediately when corrected; a visible, deletable, bounded receipt stores only turn references and word counts—not a quoted message, emotion label, sentiment score, or diagnosis;
 - typed safety contexts for self-harm, acute medical danger, violence risk, external threats, third-party concern, and general distress; the companion keeps talking and makes proportionate urgent options available without locking the chat;
-- optional persistent hands-free input: one tap listens, submits a completed utterance, and resumes listening after the visible reply; mute keeps listening active with text-only replies; only the owner-approved calm-female and warm-male product selectors may reach a future reviewed provider, while an unapproved preset fails closed before provider status is queried;
+- optional persistent hands-free input: one tap listens, submits a completed utterance, and resumes listening after the visible reply; mute keeps listening active with text-only replies; recognition handlers are detached before an engine is stopped, and every buffered callback is bound to the exact recognition instance, privacy-session epoch, unlocked state, and active hands-free session so old primary speech cannot enter a locked or guardian profile; only the owner-approved calm-female and warm-male product selectors may reach a future reviewed provider, while an unapproved preset fails closed before provider status is queried;
 - click-to-play, hash-bound previews of the two owner-approved starter voice samples; these are clearly labeled static previews and never presented as live synthesis;
 - idle, listening, speaking, and guided-breathing motion with reduced-motion support;
 - adaptive reminder logic that becomes quieter for reliable medication routines and more visible after misses;
@@ -34,23 +36,23 @@ An original, local-first wellbeing companion for Hack for Humanity | Summer 2026
 - conversation behavior is extensively scenario-tested, but the tests are not clinical validation or a valid clinical “Turing test”;
 - no clinical validation, diagnosis, prescription, or dose-changing behavior;
 - no cloud AI or public health-data transfer is enabled;
-- the prior Windows development archive is unsigned and was checksum-sealed and smoke-verified, but the new affect-evidence and approved-selector source changes supersede it; a fresh rebuild, smoke, lifecycle verification, checksum seal, and publisher signature remain required before public release.
+- the prior Windows development archive is unsigned and was checksum-sealed and smoke-verified, but the current multi-clause memory extraction, deterministic recall, provenance-linked transcript forgetting (including Nina Simone collision preservation), in-flight Forget reply refresh, privacy-session/vault-transition race fixes, and buffered speech-recognition privacy guards supersede it; a fresh rebuild, smoke, lifecycle verification, checksum seal, and publisher signature remain required before public release.
 
 ## Verification snapshot
 
 The current source snapshot was independently rerun on 2026-08-25 with these reproducible gates:
 
-- source behavior: **396/396 tests passed** across 22 test files (64 reported suites);
-- expanded hostile evaluation: **57/57 scenarios passed**, with zero recorded known software defects;
+- source behavior: **430/430 tests passed** across 24 test files (68 reported suites), including all **11/11 memory-generation/privacy-session regression tests** and **5/5 hands-free control tests**; the latter include two genuine buffered interim/final callback interleavings after lock and guardian unlock, while the memory suite covers Nina Simone collision preservation, ordinary Forget during a delayed local-model reply, relock invalidation, vault-creation mutation blocking, and app-level quiescence wiring;
+- expanded hostile evaluation: **57/57 scenarios passed**; the machine-readable known-defects register contains **0 open entries for this tested source snapshot**, which is not a claim that the software can have no defects;
 - Windows desktop shell: **51/51 tests passed**;
 - TypeScript compilation and the Vite production build: passed;
 - both owner-approved static preview WAVs: exact SHA-256 bindings passed;
 - desktop JavaScript and PowerShell syntax gates: passed.
-- prior sealed Windows setup archive: exact SHA-256 recorded in its matching sidecar and external receipt, now superseded by the source changes above;
+- prior sealed Windows setup archive: exact SHA-256 recorded in its matching sidecar and external receipt, now superseded specifically by the current multi-clause memory extraction, deterministic recall, provenance-linked transcript forgetting and Nina collision fix, in-flight Forget reply refresh, privacy-session/vault-transition race fixes, and buffered recognition-callback isolation;
 - prior packaged-process smoke: window, notification-area tray, renderer, localStorage round trip, and loopback health all passed;
 - prior isolated preserve/reinstall/remove-all lifecycle: passed without modifying the real user profile; both package gates must be rerun on the next build.
 
-The reproducible evaluation protocol, fictional corpus, hostile probes, and report generator are in [`evaluation/`](evaluation/). Running the evaluation generator produces the ignored machine report locally. These are software and adversarial scenario tests, not clinical validation. The current package is an unsigned development candidate; its matching sidecar and receipt must travel with it, and the real installer lifecycle still needs a disposable Windows user or VM before public release.
+The reproducible evaluation protocol, fictional corpus, hostile probes, and report generator are in [`evaluation/`](evaluation/). Running the evaluation generator produces the ignored machine report locally. These are software and adversarial scenario tests, not clinical validation. The prior sealed archive remains an unsigned, superseded development artifact and is not a package of this current source; its matching sidecar and receipt must travel with it. This source needs a fresh package and the real installer lifecycle still needs a disposable Windows user or VM before public release.
 
 ## Run locally
 

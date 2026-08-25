@@ -19,6 +19,23 @@ function memory(kind: MemoryKind, label: string, value: string, sensitive = fals
   };
 }
 
+const RELATIONSHIP_SOURCE = "mom|mother|dad|father|parents?|aunt|uncle|sister|brother|friend|partner|wife|husband|cousin";
+const NEW_MEMORY_CLAUSE_SUBJECT_SOURCE = `(?:I\\b|my\\s+(?:${RELATIONSHIP_SOURCE})\\b)`;
+const MEMORY_VALUE_END_SOURCE = `(?=(?:[.!?;]|\\s*[—–:]\\s*(?=${NEW_MEMORY_CLAUSE_SUBJECT_SOURCE})|,\\s*(?:(?:and|but|while|then)\\s+)?${NEW_MEMORY_CLAUSE_SUBJECT_SOURCE}|\\s+(?:and|but|while|then)\\s+${NEW_MEMORY_CLAUSE_SUBJECT_SOURCE}|$))`;
+const PERSON_VALUE_NON_NAMES = new Set([
+  "always", "often", "usually", "sometimes", "never", "really", "just", "still",
+  "is", "was", "lives", "live", "works", "work", "likes", "like", "loves", "love",
+  "enjoys", "enjoy", "has", "had", "gives", "gave", "listens", "helps", "calls",
+  "visits", "teaches", "studies", "makes", "plays", "watches", "supports", "prefers",
+  "collects", "grows", "wants", "needs", "can", "will", "would", "does", "did",
+]);
+
+export function personNameFromMemoryValue(value: string): string | undefined {
+  const match = /^([A-Za-z][A-Za-z'-]{1,40})\s+(?=(?:is|was|lives?|works?|likes?|loves?|enjoys?|has|had|gives?|gave|listens?|helps?|calls?|visits?|teaches?|studies?|makes?|plays?|watches?|supports?|prefers?|collects?|grows?|wants?|needs?|can|will|would|does|did|always|often|usually|sometimes|never)\b)/i.exec(value.trim());
+  if (!match || PERSON_VALUE_NON_NAMES.has(match[1].toLowerCase())) return undefined;
+  return match[1];
+}
+
 const WEEKDAYS: Record<string, number> = {
   sunday: 0,
   monday: 1,
@@ -197,16 +214,28 @@ export function extractMemories(text: string, now = new Date(), currentBirthdayV
   const learned: MemoryRecord[] = [];
   const cleaned = text.trim().replace(/\s+/g, " ");
 
-  const nameMatch = cleaned.match(/\b(?:my name is|call me)\s+([A-Za-z][A-Za-z' -]{0,32})(?:[.!?,]|$)/i);
+  const nameMatch = cleaned.match(new RegExp(
+    `\\b(?:my name is|call me)\\s+([A-Za-z][A-Za-z' -]{0,32}?)${MEMORY_VALUE_END_SOURCE}`,
+    "i",
+  ));
   if (nameMatch) learned.push(memory("identity", "Preferred name", nameMatch[1]));
 
-  const preferenceMatch = cleaned.match(/\bI (?:really )?(like|love|enjoy|prefer)\s+(.+?)(?:[.!?]|$)/i);
+  const preferenceMatch = cleaned.match(new RegExp(
+    `\\bI (?:really )?(like|love|enjoy|prefer)\\s+(.+?)${MEMORY_VALUE_END_SOURCE}`,
+    "i",
+  ));
   if (preferenceMatch) learned.push(memory("preference", preferenceMatch[1].toLowerCase(), preferenceMatch[2]));
 
-  const dislikeMatch = cleaned.match(/\bI (?:really )?(?:dislike|hate|do not like|don't like)\s+(.+?)(?:[.!?]|$)/i);
+  const dislikeMatch = cleaned.match(new RegExp(
+    `\\bI (?:really )?(?:dislike|hate|do not like|don't like)\\s+(.+?)${MEMORY_VALUE_END_SOURCE}`,
+    "i",
+  ));
   if (dislikeMatch) learned.push(memory("preference", "avoid", dislikeMatch[1]));
 
-  const personPattern = /\bmy (mom|mother|dad|father|parents?|aunt|uncle|sister|brother|friend|partner|wife|husband|cousin)\s+(.+?)(?:[.!?]|$)/gi;
+  const personPattern = new RegExp(
+    `\\bmy (${RELATIONSHIP_SOURCE})\\s+(.+?)${MEMORY_VALUE_END_SOURCE}`,
+    "gi",
+  );
   for (const personMatch of cleaned.matchAll(personPattern)) {
     learned.push(memory("person", personMatch[1].toLowerCase(), personMatch[2]));
   }
@@ -268,6 +297,70 @@ export function mergeMemories(existing: MemoryRecord[], learned: MemoryRecord[])
   });
   const keys = new Set(retained.map((entry) => `${entry.kind}:${entry.label.toLowerCase()}:${entry.value.toLowerCase()}`));
   return [...retained, ...learned.filter((entry) => !keys.has(`${entry.kind}:${entry.label.toLowerCase()}:${entry.value.toLowerCase()}`))];
+}
+
+function normalizedIdentityValue(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function normalizedPrivacyText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .replace(/[^\p{L}\p{N}'-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizedTextContainsPhrase(turnText: string, phrase: string): boolean {
+  const normalizedTurn = normalizedPrivacyText(turnText);
+  const normalizedDetail = normalizedPrivacyText(phrase);
+  if (!normalizedTurn || !normalizedDetail) return false;
+  return ` ${normalizedTurn} `.includes(` ${normalizedDetail} `);
+}
+
+function escapedRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function turnContainsRelationshipEcho(turnText: string, forgotten: MemoryRecord, personName: string): boolean {
+  const normalizedTurn = normalizedPrivacyText(turnText);
+  const normalizedRelationship = normalizedPrivacyText(forgotten.label);
+  const normalizedName = normalizedPrivacyText(personName);
+  if (!normalizedTurn || !normalizedRelationship || !normalizedName) return false;
+  const relationship = escapedRegex(normalizedRelationship);
+  const name = escapedRegex(normalizedName);
+  return [
+    new RegExp(`\\b(?:my|your)\\s+${relationship}\\s+${name}\\b`, "u"),
+    new RegExp(`\\b${name}\\s+(?:is|was)\\s+(?:my|your)\\s+${relationship}\\b`, "u"),
+    new RegExp(`\\b${name}\\s+(?:sounds|seems)(?:\\s+like)?\\s+(?:someone|a person)\\s+(?:important|close)\\s+(?:to|for)\\s+you\\b`, "u"),
+  ].some((pattern) => pattern.test(normalizedTurn));
+}
+
+function turnContainsForgottenMemory(turnText: string, forgotten: MemoryRecord): boolean {
+  if (normalizedTextContainsPhrase(turnText, forgotten.value)) return true;
+  if (forgotten.kind !== "person") return false;
+  const personName = personNameFromMemoryValue(forgotten.value);
+  return Boolean(personName && turnContainsRelationshipEcho(turnText, forgotten, personName));
+}
+
+export function forgetMemory(profile: CompanionProfile, memoryId: string): CompanionProfile {
+  const forgotten = profile.memories.find((entry) => entry.id === memoryId);
+  if (!forgotten) return profile;
+
+  const forgetsCurrentPreferredName = forgotten.kind === "identity"
+    && normalizedIdentityValue(forgotten.label) === "preferred name"
+    && normalizedIdentityValue(forgotten.value) === normalizedIdentityValue(profile.preferredName);
+
+  return {
+    ...profile,
+    preferredName: forgetsCurrentPreferredName ? "" : profile.preferredName,
+    memories: profile.memories.filter((entry) => entry.id !== memoryId),
+    turns: profile.turns.filter((turn) => {
+      if (turn.learnedMemoryIds?.includes(memoryId) || turn.groundedMemoryIds?.includes(memoryId)) return false;
+      return !turnContainsForgottenMemory(turn.text, forgotten);
+    }),
+  };
 }
 
 export function defaultProfile(): CompanionProfile {
