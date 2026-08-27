@@ -11,6 +11,7 @@ const adversarialConfigPath = join(evaluationDirectory, "vitest.edge.config.ts")
 const latestReportPath = join(evaluationDirectory, "latest-report.json");
 const buildLogPath = join(evaluationDirectory, "build.log");
 const defectsPath = join(evaluationDirectory, "known-defects.json");
+const viteConfigPath = join(projectRoot, "vite.config.ts");
 
 function run(command, args) {
   return spawnSync(command, args, {
@@ -32,7 +33,7 @@ const adversarialRun = run(process.execPath, [vitestCli,
 ]);
 const typeScriptRun = run(process.execPath, [join(projectRoot, "node_modules", "typescript", "bin", "tsc"), "-b"]);
 const viteBuildRun = typeScriptRun.status === 0
-  ? run(process.execPath, [join(projectRoot, "node_modules", "vite", "bin", "vite.js"), "build"])
+  ? run(process.execPath, [join(projectRoot, "node_modules", "vite", "bin", "vite.js"), "build", "--config", viteConfigPath])
   : { status: null, stdout: "", stderr: "Vite build skipped because TypeScript compilation failed.\n" };
 const buildRun = {
   status: typeScriptRun.status === 0 && viteBuildRun.status === 0 ? 0 : 1,
@@ -89,6 +90,7 @@ const report = {
   },
   artifacts: {
     corpus: "evaluation/fictional-longitudinal-corpus.ts",
+    boundedOwnerJourney: "tests/bounded-owner-journey.test.ts",
     protocol: "evaluation/EVALUATION_PROTOCOL.md",
     rawVitestReport: "evaluation/vitest-raw.json",
     adversarialProbe: "evaluation/edge-probe.test.ts",

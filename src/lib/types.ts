@@ -67,6 +67,8 @@ export interface MedicationPlan {
   name: string;
   scheduleLabel: string;
   time: string;
+  /** The user supplied a part of day, not a prescriber-specified clock time. */
+  partOfDayOnly?: boolean;
   adherenceStreak: number;
   recentMisses: number;
   lastConfirmedDate?: string;
@@ -110,6 +112,8 @@ export interface InterestPack {
   updatedAt: string;
 }
 
+export type ThemePreference = "system" | "light" | "dark";
+
 export interface CompanionProfile {
   preferredName: string;
   memories: MemoryRecord[];
@@ -117,6 +121,7 @@ export interface CompanionProfile {
   appointments: AppointmentPlan[];
   turns: ConversationTurn[];
   voice: "soft-feminine" | "warm-neutral" | "calm-masculine";
+  theme: ThemePreference;
   speechEnabled: boolean;
   learningEnabled: boolean;
   interestPacksEnabled: boolean;

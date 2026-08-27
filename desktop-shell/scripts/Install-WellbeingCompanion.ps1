@@ -4,7 +4,10 @@ param(
     [switch]$SkipDesktop,
 
     [Parameter()]
-    [switch]$AcceptVerifiedUnsignedRuntime
+    [switch]$AcceptVerifiedUnsignedRuntime,
+
+    [Parameter()]
+    [switch]$VerifyOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -154,16 +157,17 @@ function Initialize-OwnedDirectory {
         ConvertTo-Json | Set-Content -LiteralPath $markerPath -Encoding utf8
 }
 
-$payloadRoot = Join-Path $PSScriptRoot 'Payload'
+$setupRoot = Split-Path -Parent $PSScriptRoot
+$payloadRoot = Join-Path $setupRoot 'Payload'
 $sourceExecutable = Join-Path $payloadRoot 'WellbeingCompanionWorkingTitle.exe'
 $sourceReceipt = Join-Path $payloadRoot 'BUILD-RECEIPT.json'
 $sourceUninstaller = Join-Path $PSScriptRoot 'Uninstall-WellbeingCompanion.ps1'
-$setupReceiptPath = Join-Path $PSScriptRoot 'SETUP-RECEIPT.json'
+$setupReceiptPath = Join-Path $setupRoot 'SETUP-RECEIPT.json'
 foreach ($requiredFile in @($sourceExecutable, $sourceReceipt, $sourceUninstaller, $setupReceiptPath)) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) { throw "The WellbeingCompanion setup payload is incomplete: $requiredFile" }
 }
 Assert-NoReparsePointTree -Root $payloadRoot
-Assert-SetupReceipt -Root $PSScriptRoot -ReceiptPath $setupReceiptPath
+Assert-SetupReceipt -Root $setupRoot -ReceiptPath $setupReceiptPath
 $signature = Get-AuthenticodeSignature -LiteralPath $sourceExecutable
 $receipt = Get-Content -LiteralPath $sourceReceipt -Raw | ConvertFrom-Json
 if ($receipt.product -ne 'Wellbeing companion working-title desktop shell') { throw 'The wellbeing companion build receipt is invalid.' }
@@ -171,6 +175,16 @@ $actualExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceExec
 if ($actualExecutableHash -ne ([string]$receipt.executableSha256).ToUpperInvariant()) { throw 'The WellbeingCompanion executable does not match its build receipt.' }
 if ($signature.Status.ToString() -ne [string]$receipt.executableSignatureStatus -or $signature.Status -notin @('Valid', 'NotSigned')) {
     throw "The WellbeingCompanion runtime signature state does not match its build receipt (actual: $($signature.Status))."
+}
+if ($VerifyOnly) {
+    [pscustomobject]@{
+        Status = 'VerifiedOnly'
+        SetupRoot = $setupRoot
+        ExecutableSha256 = $actualExecutableHash
+        SignatureStatus = $signature.Status.ToString()
+        RealUserProfileMutated = $false
+    }
+    return
 }
 if ($signature.Status -eq 'NotSigned' -and -not $AcceptVerifiedUnsignedRuntime) {
     $choice = $Host.UI.PromptForChoice(
@@ -243,7 +257,7 @@ $systemRoot = Get-RequiredKnownFolder -Folder System
 $powerShellPath = Join-Path $systemRoot 'WindowsPowerShell\v1.0\powershell.exe'
 $uninstallShortcut = $shell.CreateShortcut((Join-Path $startMenuFolder 'Uninstall Wellbeing Companion (Working Title).lnk'))
 $uninstallShortcut.TargetPath = $powerShellPath
-$uninstallShortcut.Arguments = "-NoProfile -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`""
+$uninstallShortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`""
 $uninstallShortcut.WorkingDirectory = $systemRoot
 $uninstallShortcut.IconLocation = "$installedIcon,0"
 $uninstallShortcut.Description = 'Uninstall the wellbeing companion and choose whether to preserve private local data'
@@ -258,8 +272,8 @@ New-ItemProperty -Path $uninstallRegistryPath -Name DisplayVersion -Value ([stri
 New-ItemProperty -Path $uninstallRegistryPath -Name Publisher -Value 'Kira Labs' -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallRegistryPath -Name DisplayIcon -Value "`"$installedIcon`",0" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallRegistryPath -Name InstallLocation -Value $installFolder -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallRegistryPath -Name UninstallString -Value "`"$powerShellPath`" -NoProfile -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`"" -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallRegistryPath -Name QuietUninstallString -Value "`"$powerShellPath`" -NoProfile -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`" -PreserveData" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallRegistryPath -Name UninstallString -Value "`"$powerShellPath`" -NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`"" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallRegistryPath -Name QuietUninstallString -Value "`"$powerShellPath`" -NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`" -PreserveData" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallRegistryPath -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
 New-ItemProperty -Path $uninstallRegistryPath -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
 

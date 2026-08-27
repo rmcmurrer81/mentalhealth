@@ -10,8 +10,9 @@ describe("production voice lifecycle wiring", () => {
     expect(appSource).toContain("createLocalVoiceOutput(window.wellbeingDesktop?.localVoice)");
     expect(appSource).toContain("voiceOutputRef.current?.speak");
     expect(appSource).not.toMatch(/speechSynthesis|SpeechSynthesisUtterance|createBrowserVoiceOutput/);
-    expect(appSource).toContain("The selected local voice is not connected yet.");
-    expect(appSource).toContain("no system-voice fallback");
+    expect(appSource).toContain("The optional local Chatterbox voice is unavailable.");
+    expect(appSource).toContain("no silent substitute voice");
+    expect(appSource).toContain("This complete reply remains visible as text.");
   });
 
   it("routes both mute controls through immediate cancellation", () => {
@@ -33,6 +34,21 @@ describe("production voice lifecycle wiring", () => {
     expect(completion).toContain('source === "hands-free"');
     expect(completion).toContain("voiceProcessingRef.current = false");
     expect(completion).toContain("scheduleHandsFreeListening()");
+  });
+
+  it("holds a complete reply during local voice warmup and releases it when ready", () => {
+    expect(appSource).toContain("pendingSpokenReplyRef");
+    expect(appSource).toContain('localVoiceStateRef.current === "checking"');
+    expect(appSource).toContain("This complete reply is visible now and will be spoken when the voice is ready.");
+    expect(appSource).toContain("releaseVoiceQueueWhenReady()");
+    expect(appSource).toContain("failPendingVoiceQueue()");
+  });
+
+  it("speaks the fresh onboarding question once local voice becomes ready", () => {
+    expect(appSource).toContain("openingSpeechAttemptedRef");
+    expect(appSource).toContain("current.turns.length === 1");
+    expect(appSource).toContain("!current.preferredName && current.speechEnabled");
+    expect(appSource).toContain("queueSpokenReply(opening.text)");
   });
 
   it("pauses recognition for an approved static preview and never routes it through dynamic speech", () => {

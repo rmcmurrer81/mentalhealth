@@ -216,7 +216,7 @@ const SUMMARIES: readonly GameSummary[] = [
   { kind: "five-senses", title: "Five-senses grounding", description: "A gentle, optional five-step noticing activity.", defaultRounds: 5 },
 ];
 
-const SAFETY_CONCERN = /\b(?:kill myself|hurt myself|end my life|want to die|suicide|overdose|cannot go on|can't go on)\b/i;
+const SAFETY_CONCERN = /\b(?:kill myself|hurt myself|end my life|want to die|(?:don't|do not|no longer) want to be alive|suicide|overdose|cannot go on|can't go on)\b/i;
 const SKIP = /^(?:skip|pass|next|i(?:'d| would)? rather not|not right now|no thanks)[.! ]*$/i;
 
 function hashSeed(value: string): number {

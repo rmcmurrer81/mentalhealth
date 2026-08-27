@@ -17,6 +17,11 @@ test('installer creates own shortcuts and Installed Apps entry with receipt and 
   assert.match(source, /WellbeingCompanionWorkingTitle\.ico/);
   assert.match(source, /PrivateDataPolicy = 'Preserved by default during uninstall'/);
   assert.match(source, /AcceptVerifiedUnsignedRuntime/);
+  assert.match(source, /\[switch\]\$VerifyOnly/);
+  assert.match(source, /\$setupRoot = Split-Path -Parent \$PSScriptRoot/);
+  assert.match(source, /Assert-SetupReceipt -Root \$setupRoot/);
+  assert.match(source, /Status = 'VerifiedOnly'/);
+  assert.match(source, /RealUserProfileMutated = \$false/);
   assert.match(source, /Assert-SetupReceipt/);
   assert.match(source, /Assert-NoReparsePointTree/);
   assert.match(source, /Refusing to claim an existing unmarked directory/);
@@ -30,19 +35,32 @@ test('installer creates own shortcuts and Installed Apps entry with receipt and 
 
 test('uninstall preserves data by default and remove-all is explicit and bounded', () => {
   const source = fs.readFileSync(path.join(scripts, 'Uninstall-WellbeingCompanion.ps1'), 'utf8');
-  assert.match(source, /'&Preserve private local data'/);
-  assert.match(source, /Remove &all companion data/);
+  assert.match(source, /Uninstall and keep my data/);
+  assert.match(source, /Uninstall and delete all data/);
+  assert.match(source, /System\.Windows\.Forms/);
+  assert.match(source, /ShowDialog\(\)/);
   assert.match(source, /if \(\$RemoveAllData\)/);
   assert.match(source, /Assert-NoReparsePointTree/);
   assert.match(source, /Assert-OwnedWellbeingCompanionDirectory/);
   assert.match(source, /Refusing to remove an unowned directory/);
   assert.match(source, /Get-CimInstance Win32_Process/);
+  assert.match(source, /ExecutablePath/);
+  assert.match(source, /Stop-Process -Id/);
+  assert.match(source, /Wait-Process -Id/);
+  assert.match(source, /same-named process from another directory/);
   assert.match(source, /Nothing was removed/);
   assert.match(source, /Remove-Item\s+-LiteralPath/);
   assert.doesNotMatch(source, /Remove-Item\s+-Path\s+[^\r\n]*\*/);
   const shortcutPreflight = source.indexOf('Assert-OwnedShortcut -Path $uninstallShortcut');
   const dataRemoval = source.indexOf('Remove-PreflightedOwnedDirectory -Path $localDataRoot');
   assert.ok(shortcutPreflight >= 0 && dataRemoval > shortcutPreflight);
+});
+
+test('installed uninstall routes stay console-free for normal Windows removal', () => {
+  const installer = fs.readFileSync(path.join(scripts, 'Install-WellbeingCompanion.ps1'), 'utf8');
+  const uninstaller = fs.readFileSync(path.join(scripts, 'Uninstall-WellbeingCompanion.ps1'), 'utf8');
+  assert.match(installer, /-WindowStyle Hidden -ExecutionPolicy RemoteSigned -File/);
+  assert.match(uninstaller, /-WindowStyle Hidden -ExecutionPolicy RemoteSigned -File/);
 });
 
 test('builder binds the Vite production build, custom assets, setup, and final archive', () => {
@@ -57,6 +75,16 @@ test('builder binds the Vite production build, custom assets, setup, and final a
   assert.match(source, /SETUP-RECEIPT\.json/);
   assert.match(source, /sha256\.txt/);
   assert.match(source, /receipt\.json/);
+  assert.match(source, /installer\\Setup-WellbeingCompanion\.cs/);
+  assert.match(source, /Microsoft\.NET\\Framework64\\v4\.0\.30319\\csc\.exe/);
+  assert.match(source, /SETUP-WELLBEING-COMPANION\.exe/);
+  assert.match(source, /Join-Path \$setupRoot 'Support'/);
+  assert.match(source, /Install-WellbeingCompanion\.ps1'\) -Destination \$supportRoot/);
+  assert.match(source, /Uninstall-WellbeingCompanion\.ps1'\) -Destination \$supportRoot/);
+  assert.match(source, /Assert-ArchivePathBudget/);
+  assert.match(source, /MaximumEntryCharacters 140 -MaximumDestinationCharacters 220/);
+  assert.doesNotMatch(source, /Install-WellbeingCompanion\.ps1'\) -Destination \$setupRoot/);
+  assert.doesNotMatch(source, /Uninstall-WellbeingCompanion\.ps1'\) -Destination \$setupRoot/);
   assert.doesNotMatch(source, /vinext|UnitLine|UnitDay|SetSignal/i);
 });
 
@@ -65,12 +93,19 @@ test('verifier checks exact receipts, offline assets, permissions, local model b
   assert.match(source, /Assert-FileRecords/);
   assert.match(source, /Assert-FileRecords -Root \(Join-Path \$unpackedRoot 'resources\\app'\) -Records @\(\$buildReceipt\.integrity\.files\)/);
   assert.match(source, /automatic external asset URL/);
-  assert.match(source, /Start-Process -FilePath \$executablePath/);
+  assert.match(source, /Start-Process -FilePath \$smokeExecutablePath/);
+  assert.match(source, /exact extracted smoke executable does not match the sealed executable hash/i);
+  assert.match(source, /actualInstallerExecuted = \$false/);
   assert.match(source, /successReceiptRequiredWhenLauncherExitCodeUnavailable/);
   assert.match(source, /COMPANION_SMOKE_USER_DATA/);
   assert.match(source, /windowCreated/);
   assert.match(source, /trayCreated/);
   assert.match(source, /localStorageRoundTrip/);
+  assert.match(source, /exact renderer session did not prove its pre-navigation loopback warmup/i);
+  assert.match(source, /bounded initial-navigation evidence is invalid/i);
+  assert.match(source, /packaged procedural 3D renderer did not prove a live articulated wave/);
+  assert.match(source, /webgl-3d-motion/);
+  assert.match(source, /motionTick/);
   assert.match(source, /microphoneRequiresExplicitHandsFreeIpc/);
   assert.match(source, /displayCaptureAllowed/);
   assert.match(source, /localModelBoundary/);
@@ -79,7 +114,14 @@ test('verifier checks exact receipts, offline assets, permissions, local model b
   assert.match(source, /providerConfigured/);
   assert.match(source, /playbackVerified/);
   assert.match(source, /systemVoiceFallback/);
-  assert.match(source, /WorkingDirectory \(Split-Path -Parent \$executablePath\)/);
+  assert.match(source, /WorkingDirectory \(Split-Path -Parent \$smokeExecutablePath\)/);
+  assert.match(source, /SETUP-WELLBEING-COMPANION\.exe/);
+  assert.match(source, /Support\\Install-WellbeingCompanion\.ps1/);
+  assert.match(source, /Get-ChildItem -LiteralPath \$setupRoot -File -Filter '\*\.ps1'/);
+  assert.match(source, /-VerifyOnly -AcceptVerifiedUnsignedRuntime/);
+  assert.match(source, /TAMPER-PROBE/);
+  assert.match(source, /receiptBoundTamperRejected = \$tamperRejected/);
+  assert.match(source, /ExtractionBaseRoot/);
 });
 
 test('isolated lifecycle harness is temp-root-only and honest about not executing real installer', () => {
@@ -97,4 +139,38 @@ test('isolated lifecycle harness is temp-root-only and honest about not executin
   assert.match(source, /reinstallRecoveredDataPassed/);
   assert.match(source, /explicitRemoveAllPassed/);
   assert.doesNotMatch(source, /HKCU:/);
+});
+
+test('repeated-run verifier preserves distinct receipts and refuses a partial pass', () => {
+  const source = fs.readFileSync(path.join(scripts, 'Run-ThreePackagedSmokes.ps1'), 'utf8');
+  assert.match(source, /\[ValidateRange\(3, 20\)\]/);
+  assert.match(source, /REPEATED-RUN-SUMMARY\.json/);
+  assert.match(source, /-ExtractionBaseRoot \$ExtractionBaseRoot/);
+  assert.match(source, /absoluteBaseExcludedFromShareSafeSummary = \$true/);
+  assert.match(source, /& \$verifyScript -RunId \$runId/);
+  assert.match(source, /Copy-Item -LiteralPath \$currentSmoke -Destination \$rawSmokeCopy/);
+  assert.match(source, /PACKAGED-SMOKE\.sanitized\.json/);
+  assert.match(source, /preexisting-current-evidence-local-only/);
+  assert.match(source, /countedAsNewRun = \$false/);
+  assert.match(source, /PREEXISTING-EVIDENCE-MANIFEST\.json/);
+  assert.match(source, /capturedBeforeFirstNewRun = \$true/);
+  assert.match(source, /ConvertTo-ShareSafeValue/);
+  assert.match(source, /if \(\$property\.Name -ieq 'isolatedUserData'\)/);
+  assert.match(source, /Assert-NoAbsoluteLocalPath/);
+  assert.match(source, /sanitizedReceiptsRejectAbsoluteLocalPaths = \$true/);
+  assert.match(source, /FAILURE\.raw\.local\.txt/);
+  assert.match(source, /RUN_FAILED_SEE_LOCAL_ONLY_FAILURE_EVIDENCE/);
+  assert.match(source, /summaryRejectsAbsoluteLocalPaths = \$true/);
+  assert.match(source, /Assert-NoAbsoluteLocalPath -Value \$summary/);
+  assert.match(source, /Assert-NoAbsoluteLocalPath -Value \$record/);
+  assert.match(source, /Test-IsFullyQualifiedLocalPath -Value \$Value/);
+  assert.match(source, /Get-BoundedRelativePath -Base \$verificationRoot/);
+  assert.doesNotMatch(source, /\[IO\.Path\]::GetRelativePath/);
+  assert.doesNotMatch(source, /\[IO\.Path\]::IsPathFullyQualified/);
+  assert.match(source, /\(\?:\^\|\[\\s"\(\]\)/);
+  assert.match(source, /\$runRecords\.Count -eq \$RunCount/);
+  assert.match(source, /\$distinctRunIds\.Count -eq \$RunCount/);
+  assert.match(source, /status = if \(\$passed\) \{ 'PASS' \} else \{ 'INCOMPLETE' \}/);
+  assert.match(source, /rawReceiptsAreLocalOnly = \$true/);
+  assert.match(source, /publishRawReceipts = \$false/);
 });

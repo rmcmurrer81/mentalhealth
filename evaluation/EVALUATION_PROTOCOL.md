@@ -26,6 +26,19 @@ expectations in this repository at the tested revision.
 - exact deterministic fallback when no local model is available;
 - steady-only loopback model routing, minimized context, and output rejection.
 
+The bounded owner journey in `tests/bounded-owner-journey.test.ts` also runs
+one invented profile through onboarding, a named cousin and aunt, an interest,
+a corrected birthday, a user-reported prescribed schedule, an appointment,
+ordinary conversation, anger, depression, severe distress, continued
+conversation, local reloads, precise person deletion, theme persistence,
+primary/guardian vault separation, compact and character-only presentation
+contracts, articulated movement, and a reviewed timing-cue hook that drives
+distinct 3D mouth poses.
+
+The timing-cue hook validates and consumes a bounded provider-supplied cue
+sequence. The current voice boundary does not supply alignment cues, so this
+evaluation does not claim audio-accurate lip sync.
+
 The independent edge probe adds 57 explicit cases spanning alternative
 self-harm and ingestion phrasings, third-party route ownership, violence and
 external-threat wording, ordinary-language collision resistance, named-person

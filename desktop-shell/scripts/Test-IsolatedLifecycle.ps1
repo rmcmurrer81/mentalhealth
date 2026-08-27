@@ -6,7 +6,7 @@ Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $releaseRoot = Join-Path $projectRoot 'release'
 $verificationRoot = Join-Path $projectRoot 'verification'
-$packageVersion = (Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'package.json') | ConvertFrom-Json).version
+$packageVersion = (Get-Content -Raw -LiteralPath (Join-Path $projectRoot 'package.json') -Encoding UTF8 | ConvertFrom-Json).version
 $setupZip = Join-Path $releaseRoot "Wellbeing-Companion-Working-Title-Setup-$packageVersion-win32-x64.zip"
 $setupSidecar = "$setupZip.sha256.txt"
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("wellbeing-lifecycle-{0}" -f [Guid]::NewGuid().ToString('N'))
@@ -34,7 +34,7 @@ function Assert-OwnedDirectory {
     Assert-UnderTestRoot -Path $Path
     $markerPath = Join-Path $Path '.wellbeing-companion-owner.json'
     if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { throw "Missing isolated owner marker: $Path" }
-    $marker = Get-Content -Raw -LiteralPath $markerPath | ConvertFrom-Json
+    $marker = Get-Content -Raw -LiteralPath $markerPath -Encoding UTF8 | ConvertFrom-Json
     if ($marker.schema -ne 1 -or $marker.productId -ne $productId -or -not ([IO.Path]::GetFullPath([string]$marker.root).TrimEnd('\')).Equals([IO.Path]::GetFullPath($Path).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
         throw "Invalid isolated owner marker: $Path"
     }
@@ -100,7 +100,7 @@ try {
         bytes = [long]$receiptItem.Length
         sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $receiptPath).Hash.ToUpperInvariant()
     }
-    $receipt = Get-Content -Raw -LiteralPath $receiptPath | ConvertFrom-Json
+    $receipt = Get-Content -Raw -LiteralPath $receiptPath -Encoding UTF8 | ConvertFrom-Json
     foreach ($record in @($receipt.files)) {
         $fullPath = [IO.Path]::GetFullPath((Join-Path $setupRoot ([string]$record.path).Replace('/', '\')))
         Assert-UnderTestRoot -Path $fullPath

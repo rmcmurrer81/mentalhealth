@@ -31,6 +31,14 @@ describe("steady-only local model enhancement", () => {
     expect(decision.notice).toContain("data stayed on this device");
   });
 
+  it("does not mistake an affirmative wish to be alive for a protected route", async () => {
+    const model = bridge("I'm glad you said that. What is one small thing you want to look forward to next?");
+    const reply = respond("I want to be alive and make tomorrow better", defaultProfile());
+    const decision = await enhanceSteadyReply("I want to be alive and make tomorrow better", reply, [], model);
+    expect(decision.status).toBe("enhanced");
+    expect(model.localModel.enhanceSteadyReply).toHaveBeenCalledOnce();
+  });
+
   it.each([
     "I want to end my life",
     "Should I double my medication dose?",

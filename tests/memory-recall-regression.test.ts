@@ -65,6 +65,37 @@ describe("natural multi-clause memory and recall", () => {
     expect(steadyEnhancementEligible("What do I like, and who is Nina?", reply)).toBe(false);
   });
 
+  it("keeps a birthday clause out of a person's memory and reflects first-person details back as the user's", () => {
+    const { firstReply, profile } = learnedProfile("My cousin Sam is important to me, and my birthday is next Saturday.");
+    const sam = firstReply.learned.find((entry) => entry.kind === "person");
+
+    expect(sam).toMatchObject({ label: "cousin", value: "Sam is important to me" });
+    expect(sam?.value).not.toMatch(/birthday/i);
+    expect(respond("Who is Sam?", profile).text).toBe("Sam is your cousin. You told me Sam is important to you.");
+  });
+
+  it("uses recent conflict and requested space when a recall question also asks whether to call", () => {
+    const memories = extractMemories("My cousin Sam is important to me.");
+    const profile = {
+      ...defaultProfile(),
+      memories,
+      turns: [{
+        id: "recent-sam-conflict",
+        role: "user" as const,
+        text: "Sam and I argued today and I need some space.",
+        createdAt: "2026-08-26T15:00:00Z",
+        safetyLevel: "steady" as const,
+      }],
+    };
+
+    const reply = respond("Who is Sam, and would you suggest I call Sam tonight?", profile);
+    expect(reply.text).toContain("Sam is your cousin");
+    expect(reply.text).toContain("important to you");
+    expect(reply.text).toContain("give everyone some space");
+    expect(reply.text).toContain("avoid sending something in the hottest part");
+    expect(reply.text).not.toMatch(/you should call|you must call/i);
+  });
+
   it("states a missing person memory instead of fabricating an identity", () => {
     const { profile } = learnedProfile("I like astronomy. My aunt Nina lives in Phoenix.");
     const reply = respond("What do I like, and who is Jordan?", profile);

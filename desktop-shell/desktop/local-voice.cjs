@@ -10,7 +10,7 @@ const PUBLIC_PROVIDER_ID = 'desktop.local-voice';
 const MAX_SPEECH_CHARS = 220;
 const REQUEST_CAP_BYTES = 1_024;
 const STATUS_TIMEOUT_MS = 1_500;
-const SPEAK_TIMEOUT_MS = 30_000;
+const SPEAK_TIMEOUT_MS = 75_000;
 const PROFILES = Object.freeze(['soft-feminine', 'warm-neutral', 'calm-masculine']);
 const APPROVED_SELECTOR_BY_PROFILE = Object.freeze({
   'soft-feminine': 'calm-female.owner-approved.v1',

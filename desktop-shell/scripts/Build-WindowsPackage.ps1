@@ -28,6 +28,9 @@ $knownArchiveHashes = @{
 }
 $webDistRoot = Join-Path $sourceRoot 'dist'
 $webIndex = Join-Path $webDistRoot 'index.html'
+$iconSource = Join-Path $projectRoot 'desktop\assets\WellbeingCompanionWorkingTitle.ico'
+$setupLauncherSource = Join-Path $projectRoot 'installer\Setup-WellbeingCompanion.cs'
+$csharpCompiler = Join-Path ([Environment]::GetFolderPath('Windows')) 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 
 function Assert-GeneratedPath {
     param([Parameter(Mandatory)] [string]$Base, [Parameter(Mandatory)] [string]$Candidate)
@@ -79,8 +82,67 @@ function Get-TreeManifest {
     return @($records)
 }
 
+function Assert-ArchivePathBudget {
+    param(
+        [Parameter(Mandatory)] [string]$ArchivePath,
+        [Parameter(Mandatory)] [string]$DestinationRoot,
+        [Parameter(Mandatory)] [int]$MaximumEntryCharacters,
+        [Parameter(Mandatory)] [int]$MaximumDestinationCharacters
+    )
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $destinationFull = [IO.Path]::GetFullPath($DestinationRoot).TrimEnd('\')
+    $maximumEntry = 0
+    $maximumDestination = 0
+    $entryCount = 0
+    $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        foreach ($entry in $archive.Entries) {
+            $normalized = ([string]$entry.FullName).Replace('\', '/')
+            if ([string]::IsNullOrWhiteSpace($normalized) -or
+                $normalized.StartsWith('/', [StringComparison]::Ordinal) -or
+                [IO.Path]::IsPathRooted($normalized.Replace('/', '\')) -or
+                $normalized -match '(^|/)\.\.(/|$)' -or
+                $normalized.Contains(':')) {
+                throw "Wellbeing Companion setup archive contains an unsafe entry: $normalized"
+            }
+            foreach ($component in @($normalized.Split('/', [StringSplitOptions]::RemoveEmptyEntries))) {
+                if ($component.Length -gt 255) { throw "Wellbeing Companion setup archive contains a component over 255 characters: $normalized" }
+            }
+            $candidate = [IO.Path]::GetFullPath((Join-Path $destinationFull $normalized.Replace('/', '\')))
+            if (-not $candidate.StartsWith("$destinationFull\", [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Wellbeing Companion setup archive entry escaped the extraction root: $normalized"
+            }
+            $entryCount += 1
+            $maximumEntry = [Math]::Max($maximumEntry, $normalized.Length)
+            $maximumDestination = [Math]::Max($maximumDestination, $candidate.Length)
+        }
+    } finally {
+        $archive.Dispose()
+    }
+    if ($maximumEntry -gt $MaximumEntryCharacters) {
+        throw "Wellbeing Companion setup archive exceeds the stock-Explorer entry budget ($maximumEntry > $MaximumEntryCharacters)."
+    }
+    if ($maximumDestination -gt $MaximumDestinationCharacters) {
+        throw "Wellbeing Companion setup archive exceeds the realistic Desktop destination budget ($maximumDestination > $MaximumDestinationCharacters)."
+    }
+    return [ordered]@{
+        entryCount = $entryCount
+        maximumEntryCharacters = $maximumEntry
+        testedDestinationRoot = $destinationFull
+        maximumDestinationCharacters = $maximumDestination
+        enforcedEntryLimit = $MaximumEntryCharacters
+        enforcedDestinationLimit = $MaximumDestinationCharacters
+        legacyMaxPathSafetyMargin = 260 - $maximumDestination
+    }
+}
+
 if (-not (Test-Path -LiteralPath $webIndex -PathType Leaf)) {
     throw "The production Vite build is missing: $webIndex. Run pnpm build first."
+}
+foreach ($requiredSetupInput in @($iconSource, $setupLauncherSource, $csharpCompiler)) {
+    if (-not (Test-Path -LiteralPath $requiredSetupInput -PathType Leaf)) {
+        throw "The Wellbeing Companion setup launcher input is missing: $requiredSetupInput"
+    }
 }
 Assert-NoReparsePointTree -Root $webDistRoot
 & (Join-Path $PSScriptRoot 'New-BrandAssets.ps1') | Out-Null
@@ -164,6 +226,7 @@ $receipt = [ordered]@{
     bundledRuntimeModules = @('node:http static server', 'Vite-bundled React client')
     offlineBoundary = 'The deterministic conversation, memory, reminders, vault, and built assets run from a fixed loopback-only static service. Optional Ollama is separate, fixed to 127.0.0.1:11434, and steady-only.'
     permissionBoundary = 'Microphone is armed only after explicit hands-free IPC and native confirmation; camera, display capture, device permissions, downloads, and non-loopback renderer requests are denied.'
+    childProcessCompatibilityBoundary = 'On Windows builds 26200-26399, Electron 43 uses a disclosed GPU and renderer process-sandbox compatibility path after repeated child-process launch failures. Context isolation stays enabled, Node integration and webviews stay disabled, and renderer navigation remains fixed to 127.0.0.1.'
     integrity = [ordered]@{
         algorithm = 'SHA-256'
         scope = 'Every regular authored file below resources/app.'
@@ -180,9 +243,16 @@ Move-Item -LiteralPath $stagingRoot -Destination $finalRoot
 New-Item -ItemType Directory -Path $setupRoot -Force | Out-Null
 $payloadRoot = Join-Path $setupRoot 'Payload'
 Copy-Item -LiteralPath $finalRoot -Destination $payloadRoot -Recurse
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-WellbeingCompanion.ps1') -Destination $setupRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-WellbeingCompanion.ps1') -Destination $setupRoot
+$supportRoot = Join-Path $setupRoot 'Support'
+New-Item -ItemType Directory -Path $supportRoot -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-WellbeingCompanion.ps1') -Destination $supportRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Uninstall-WellbeingCompanion.ps1') -Destination $supportRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination (Join-Path $setupRoot 'README.txt')
+$setupLauncherPath = Join-Path $setupRoot 'SETUP-WELLBEING-COMPANION.exe'
+& $csharpCompiler /nologo /target:winexe /optimize+ /platform:anycpu /reference:System.Windows.Forms.dll /reference:System.Drawing.dll "/win32icon:$iconSource" "/out:$setupLauncherPath" $setupLauncherSource
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupLauncherPath -PathType Leaf)) {
+    throw 'Wellbeing Companion could not compile the double-click Windows setup launcher.'
+}
 
 $setupReceiptPath = Join-Path $setupRoot 'SETUP-RECEIPT.json'
 $setupFiles = Get-TreeManifest -Root $setupRoot -ExcludedRelativePaths @('SETUP-RECEIPT.json')
@@ -201,6 +271,8 @@ $setupReceiptHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupReceiptPa
 $setupZip = Join-Path $releaseRoot "Wellbeing-Companion-Working-Title-Setup-$packageVersion-win32-x64.zip"
 if (Test-Path -LiteralPath $setupZip -PathType Leaf) { Remove-Item -LiteralPath $setupZip -Force }
 Compress-Archive -LiteralPath $setupRoot -DestinationPath $setupZip -CompressionLevel Optimal
+$realisticDesktopRoot = "C:\Users\WellbeingOwner\Desktop\Wellbeing-Companion-Owner-Acceptance-$packageVersion\Extracted-Package"
+$pathBudget = Assert-ArchivePathBudget -ArchivePath $setupZip -DestinationRoot $realisticDesktopRoot -MaximumEntryCharacters 140 -MaximumDestinationCharacters 220
 $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupZip).Hash.ToUpperInvariant()
 $sidecarPath = "$setupZip.sha256.txt"
 "$setupHash  $([IO.Path]::GetFileName($setupZip))" | Set-Content -LiteralPath $sidecarPath -Encoding ascii
@@ -213,6 +285,7 @@ $packageReceipt = [ordered]@{
     algorithm = 'SHA-256'
     scope = 'The final ZIP bytes, its external SHA-256 sidecar, and the sealed setup receipt embedded in the ZIP.'
     exclusions = @('This external package receipt excludes itself to avoid self-hash recursion.')
+    explorerPathBudget = $pathBudget
     artifacts = @(
         [ordered]@{ path = [IO.Path]::GetFileName($setupZip); bytes = [long](Get-Item -LiteralPath $setupZip).Length; sha256 = $setupHash },
         [ordered]@{ path = [IO.Path]::GetFileName($sidecarPath); bytes = [long](Get-Item -LiteralPath $sidecarPath).Length; sha256 = $sidecarHash },

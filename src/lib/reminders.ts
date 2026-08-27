@@ -1,4 +1,6 @@
 import type { AppointmentPlan, MedicationPlan } from "./types";
+import { analyzeIngestionRisk } from "./ingestion-risk";
+import { classifySafety } from "./safety";
 
 export interface ReminderCard {
   id: string;
@@ -11,6 +13,11 @@ export interface ExtractedCarePlans {
   medications: MedicationPlan[];
   appointments: AppointmentPlan[];
 }
+
+export type MedicationScheduleIntent =
+  | { status: "none" }
+  | { status: "needs-timing"; name: string }
+  | { status: "scheduled"; name: string; scheduleLabel: string; time: string; partOfDayOnly: boolean };
 
 const careId = (prefix: string) =>
   `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -30,9 +37,68 @@ function parseClock(text: string): string | null {
     if (meridiem === "am" && hour === 12) hour = 0;
     return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   }
-  if (/\b(?:every|in the) morning\b/.test(lower)) return "09:00";
-  if (/\b(?:every|in the) (?:evening|night)\b|\bnightly\b/.test(lower)) return "21:00";
+  if (/\b(?:every|each|in the) morning\b/.test(lower)) return "09:00";
+  if (/\b(?:every|each|in the) (?:evening|night)\b|\bnightly\b|\b(?:once|twice)\s+(?:at|in the)\s+(?:evening|night)\b/.test(lower)) return "21:00";
+  if (/\b(?:once|twice)\s+(?:at|in the)\s+morning\b/.test(lower)) return "09:00";
   return null;
+}
+
+const MEDICATION_SCHEDULE_START = /\b(?:at\s+\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)?|(?:every|each)\s+(?:morning|evening|night|day)|in\s+the\s+(?:morning|evening|night)|nightly|daily|(?:once|twice)\s+(?:(?:a|per)\s+day|(?:at|in the)\s+(?:morning|evening|night))|at\s+bedtime|before\s+bed|with\s+(?:breakfast|lunch|dinner))\b/i;
+
+const ONCE_AT_PART_OF_DAY = /\b(?:once|twice)\s+(?:at|in the)\s+(?:morning|evening|night)\b/i;
+
+function firstMedicationFact(value: string): string {
+  return value
+    .split(/(?:[!?]+|\.(?=\s+\S))/, 1)[0]
+    .split(/\s+(?:(?:and|but|because|while|then)\s+)?(?=(?:I|we)\b|my\s+(?:mom|mother|dad|father|parent|aunt|uncle|sister|brother|friend|partner|wife|husband|cousin)\b)/i, 1)[0]
+    .trim()
+    .replace(/[.!?]+$/, "")
+    .trim();
+}
+
+function medicationStatementTail(text: string): string | null {
+  const cleaned = text.trim().replace(/\s+/g, " ");
+  if (/^(?:should|can|could|may|might|do)\s+I\s+take\b/i.test(cleaned)) return null;
+  const direct = /\b(?:I\s+(?:take|am prescribed|was prescribed|have been prescribed)|I(?:'|’)ve\s+been prescribed)\s+(.+)$/i.exec(cleaned);
+  if (direct) return firstMedicationFact(direct[1]);
+
+  const prescriber = /\b(?:(?:my|the)\s+(?:doctor|prescriber|psychiatrist|clinician)|(?:doctor|dr\.?)\s+[A-Za-z][A-Za-z'-]{1,40})\s+(?:(?:prescribed|has prescribed|had prescribed)\s+(?:me\s+|that\s+I\s+(?:should\s+)?take\s+)?|(?:has|had)\s+me\s+take\s+|(?:told|wants)\s+me\s+to\s+take\s+|said\s+(?:(?:that\s+)?I\s+(?:should|must|need(?:ed)?\s+to)\s+|(?:for\s+me\s+)?to\s+)?take\s+)(.+)$/i.exec(cleaned);
+  if (prescriber) return firstMedicationFact(prescriber[1]);
+
+  const written = /\b(?:my\s+)?(?:prescription|medication\s+label|medicine\s+label|prescription\s+label)\s+(?:says|said)\s+(?:I\s+(?:should|must)\s+|to\s+)?take\s+(.+)$/i.exec(cleaned);
+  return written ? firstMedicationFact(written[1]) : null;
+}
+
+function normalizedMedicationName(value: string): string | null {
+  const name = value
+    .replace(/[,;:]\s*$/, "")
+    .replace(/\s+(?:for me\s+)?to take\s*$/i, "")
+    .replace(/\s+(?:as prescribed|to me)\s*$/i, "")
+    .trim();
+  if (!name || name.length > 96) return null;
+  if (/^(?:it|nothing|none|no medication|medication|medicine|my medication|my medicine)$/i.test(name)) return null;
+  return name;
+}
+
+/**
+ * Parses only a schedule the user attributes to their own prescriber, label, or
+ * existing routine. A broad cadence such as "daily" is intentionally held for
+ * clarification because it does not identify a reminder clock.
+ */
+export function medicationScheduleIntent(text: string): MedicationScheduleIntent {
+  const tail = medicationStatementTail(text);
+  if (!tail) return { status: "none" };
+  const scheduleStart = MEDICATION_SCHEDULE_START.exec(tail);
+  const rawName = scheduleStart ? tail.slice(0, scheduleStart.index) : tail;
+  const name = normalizedMedicationName(rawName);
+  if (!name) return { status: "none" };
+  if (!scheduleStart) return { status: "needs-timing", name };
+
+  const scheduleLabel = tail.slice(scheduleStart.index).trim().replace(/[,;:]\s*$/, "");
+  const time = parseClock(scheduleLabel);
+  return time
+    ? { status: "scheduled", name, scheduleLabel, time, partOfDayOnly: ONCE_AT_PART_OF_DAY.test(scheduleLabel) }
+    : { status: "needs-timing", name };
 }
 
 function validLocalDate(year: number, monthIndex: number, day: number): Date | null {
@@ -73,23 +139,28 @@ export function extractCarePlans(text: string, now = new Date()): ExtractedCareP
   const appointments: AppointmentPlan[] = [];
   const cleaned = text.trim().replace(/\s+/g, " ");
 
-  const medication = cleaned.match(/\bI (?:take|am prescribed)\s+(.+?)(?=\s+(?:at\s+\d|every\b|in the\b|nightly\b|daily\b)|[.!?]|$)(?:\s+((?:at\s+\d.+?|every\s+.+?|in the\s+.+?|nightly|daily)))?(?:[.!?]|$)/i);
-  if (medication) {
-    const scheduleLabel = medication[2]?.trim() ?? "schedule entered without a reminder time";
-    const time = parseClock(scheduleLabel);
-    if (time) {
-      medications.push({
-        id: careId("med"),
-        name: medication[1].trim(),
-        scheduleLabel,
-        time,
-        adherenceStreak: 0,
-        recentMisses: 0,
-      });
-    }
+  // Urgent disclosures never flow through the routine persistence path. The
+  // conversation remains open, but new medication schedules and appointments
+  // wait for a later, non-acute turn where the person can confirm them.
+  const ingestion = analyzeIngestionRisk(cleaned);
+  if (classifySafety(cleaned) === "urgent" || ingestion.uncertainFirstParty || ingestion.uncertainThirdParty) {
+    return { medications, appointments };
   }
 
-  const appointment = cleaned.match(/\b(?:I have|my)\s+(?:a |an )?((?:doctor(?:'s)?|therapy|medical)?\s*appointment)\s+(.+?)(?:[.!?]|$)/i);
+  const medication = medicationScheduleIntent(cleaned);
+  if (medication.status === "scheduled") {
+    medications.push({
+      id: careId("med"),
+      name: medication.name,
+      scheduleLabel: medication.scheduleLabel,
+      time: medication.time,
+      partOfDayOnly: medication.partOfDayOnly,
+      adherenceStreak: 0,
+      recentMisses: 0,
+    });
+  }
+
+  const appointment = cleaned.match(/\b(?:I have|my)\s+(?:a |an )?((?:doctor(?:'s)?|therapy|medical)?\s*appointment)\s+((?:(?:Dr|Mr|Mrs|Ms|Mx|Prof)\.(?=\s+[A-Za-z])|[^.!?])+)(?:[.!?]|$)/i);
   if (appointment) {
     const dateTime = parseAppointmentDate(appointment[2], now);
     if (dateTime) {

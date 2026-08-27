@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "product": "Wellbeing companion working-title 0.2.12 owner-test status",
+  "status": "OWNER_TEST_REQUIRED",
+  "publicReleaseApproved": false,
+  "submissionApproved": false,
+  "package": {
+    "path": "desktop-shell/release/Wellbeing-Companion-Working-Title-Setup-0.2.12-win32-x64.zip",
+    "bytes": 150944898,
+    "sha256": "A99C19ECAF782147FB54AD4CB46D910126A8E8796EC9A98753B0CFBFB5683F65",
+    "authenticode": "NotSigned"
+  },
+  "source": {
+    "testFilesPassed": 32,
+    "testFilesTotal": 32,
+    "testsPassed": 1663,
+    "testsTotal": 1663,
+    "desktopTestsPassed": 69,
+    "desktopTestsTotal": 69,
+    "typescriptBuild": "PASS",
+    "viteBuild": "PASS",
+    "lint": "PASS",
+    "powershellSyntax": "PASS"
+  },
+  "sealedPackage": {
+    "directVerification": "PASS",
+    "directVerificationRunId": "single-0.2.12-owner-review",
+    "currentVerifierReceiptRunId": "20260827T082604418Z-09cb4e84-run-03",
+    "repeatedSmokeStatus": "PASS",
+    "repeatedSmokeRunSetId": "20260827T082604418Z-09cb4e84",
+    "requiredPassingRuns": 3,
+    "retainedPassingRuns": 3,
+    "isolatedLifecycle": "PASS",
+    "realInstallerExecutedByAutomation": false,
+    "realUserProfileMutatedByAutomation": false,
+    "visualCaptureStatus": "PASS_WITH_OWNER_REVIEW_REQUIRED",
+    "visualCaptureCount": 8,
+    "visualCaptureRoot": "visual-acceptance/0.2.12-owner-preview-r1"
+  },
+  "readabilityAndOnboarding": {
+    "userFacingMinimumTextPx": 12,
+    "compactTranscriptAndComposerTextPx": 14,
+    "allSavedTurnsRendered": true,
+    "lineClampRemoved": true,
+    "boundedVerticalScroll": true,
+    "newestTurnAutoScroll": true,
+    "openingReplyEndsWithNameQuestion": true,
+    "exact440x760Capture": "visual-acceptance/0.2.12-owner-preview-r1/03-compact-character-chat.png",
+    "ownerInteractionRequired": true
+  },
+  "voice": {
+    "sourceProviderAudibleProbe": "PASS",
+    "sourceProviderProbeReceipt": "verification/CHATTERBOX_SOURCE_PROVIDER_AUDIBLE_PROBE_20260827.json",
+    "firstReplyWarmupQueueRegression": "PASS",
+    "muteClearsPendingPlaybackRegression": "PASS",
+    "installedPackageAudibleProbe": "HOLD",
+    "exactPackageAssetsAndBoundariesVerified": true,
+    "externalDependencies": [
+      "Python 3.14",
+      "chatterbox-tts 0.1.7 and compatible local Python packages",
+      "compatible CUDA GPU/runtime",
+      "existing local ResembleAI Chatterbox model cache"
+    ],
+    "modelCacheBundled": false,
+    "silentBrowserOrWindowsFallback": false,
+    "ownerMustTest": [
+      "first fresh greeting speaks after local voice warmup rather than being lost",
+      "audible synthetic reply plays from the exact installed package",
+      "speaker mute cancels or prevents playback while complete text remains visible",
+      "app exit terminates the exact owned voice host"
+    ]
+  },
+  "uninstall": {
+    "normalWindowsFormsFlowImplemented": true,
+    "exactOwnedAppAutoCloseImplemented": true,
+    "preserveDataDefault": true,
+    "explicitRemoveAllChoice": true,
+    "isolatedLifecycleRegression": "PASS",
+    "realInstalledUninstallerOwnerTest": "HOLD"
+  },
+  "remainingHolds": [
+    "owner exact-package install and interaction acceptance",
+    "exact installed-package voice discovery, playback, mute, and cleanup",
+    "real installed Windows Forms uninstall acceptance while the app is open",
+    "publisher signing",
+    "independent accessibility review",
+    "clinical validation is not claimed",
+    "Hack for Humanity eligibility confirmation",
+    "public repository, video, hosted/download links, owner approval, publication, and submission"
+  ]
+}

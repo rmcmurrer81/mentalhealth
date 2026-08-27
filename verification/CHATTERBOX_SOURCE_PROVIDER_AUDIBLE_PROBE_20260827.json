@@ -1,0 +1,16 @@
+{
+  "schema": "wellbeing.chatterbox.audible-probe.v1",
+  "testedAtUtc": "2026-08-27T03:55:00Z",
+  "scope": "Source-tree provider adapter, Python host, existing local cache, approved synthetic female reference, and Windows playback on the development computer",
+  "status": "PASS",
+  "localOnly": true,
+  "modelBundled": false,
+  "downloadAttempted": false,
+  "profile": "soft-feminine",
+  "referenceSelector": "calm-female.owner-approved.v1",
+  "playbackConfirmed": true,
+  "readyMilliseconds": 23214,
+  "speakMilliseconds": 5099,
+  "providerDisposedAfterProbe": true,
+  "importantBoundary": "This was one bounded source-provider probe. It was not an installed-package audible test and does not close the owner packaged-voice acceptance hold."
+}

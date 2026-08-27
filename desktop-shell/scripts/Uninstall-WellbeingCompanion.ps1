@@ -10,21 +10,68 @@ param(
 $ErrorActionPreference = 'Stop'
 $productId = 'com.kiralabs.wellbeing-companion-working-title'
 if ($PreserveData -and $RemoveAllData) { throw 'Choose either PreserveData or RemoveAllData, not both.' }
+$interactiveUninstall = -not $PreserveData -and -not $RemoveAllData
 
-if (-not $PreserveData -and -not $RemoveAllData) {
-    $choice = $Host.UI.PromptForChoice(
-        'Uninstall Wellbeing Companion',
-        'Remove the wellbeing companion. What should happen to private memories, conversation history, settings, and offline files?',
-        @(
-            [Management.Automation.Host.ChoiceDescription]::new('&Preserve private local data', 'Default: removes the program and shortcuts but keeps private memories, conversation history, settings, and offline files for a future reinstall.'),
-            [Management.Automation.Host.ChoiceDescription]::new('Remove &all companion data', 'Permanently removes the program, private memories, conversation history, settings, and offline files.'),
-            [Management.Automation.Host.ChoiceDescription]::new('&Cancel', 'Leaves Wellbeing Companion installed.')
-        ),
-        0
-    )
-    if ($choice -eq 2) { return }
-    $RemoveAllData = $choice -eq 1
-    $PreserveData = $choice -eq 0
+if ($interactiveUninstall) {
+    Add-Type -AssemblyName System.Drawing
+    Add-Type -AssemblyName System.Windows.Forms
+
+    $form = [Windows.Forms.Form]::new()
+    $form.Text = 'Uninstall Wellbeing Companion'
+    $form.ClientSize = [Drawing.Size]::new(560, 238)
+    $form.StartPosition = [Windows.Forms.FormStartPosition]::CenterScreen
+    $form.FormBorderStyle = [Windows.Forms.FormBorderStyle]::FixedDialog
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+    $form.ShowIcon = $false
+    $form.BackColor = [Drawing.Color]::FromArgb(247, 249, 255)
+
+    $heading = [Windows.Forms.Label]::new()
+    $heading.Text = 'Uninstall Wellbeing Companion?'
+    $heading.Font = [Drawing.Font]::new('Segoe UI', 15, [Drawing.FontStyle]::Bold)
+    $heading.ForeColor = [Drawing.Color]::FromArgb(31, 29, 66)
+    $heading.AutoSize = $true
+    $heading.Location = [Drawing.Point]::new(24, 22)
+    $form.Controls.Add($heading)
+
+    $copy = [Windows.Forms.Label]::new()
+    $copy.Text = 'Choose whether a future reinstall should remember your private conversations, memories, settings, and offline files.'
+    $copy.Font = [Drawing.Font]::new('Segoe UI', 10)
+    $copy.ForeColor = [Drawing.Color]::FromArgb(72, 69, 92)
+    $copy.Location = [Drawing.Point]::new(26, 62)
+    $copy.Size = [Drawing.Size]::new(508, 48)
+    $form.Controls.Add($copy)
+
+    $preserveButton = [Windows.Forms.Button]::new()
+    $preserveButton.Text = 'Uninstall and keep my data'
+    $preserveButton.DialogResult = [Windows.Forms.DialogResult]::Yes
+    $preserveButton.Font = [Drawing.Font]::new('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+    $preserveButton.Location = [Drawing.Point]::new(26, 132)
+    $preserveButton.Size = [Drawing.Size]::new(206, 40)
+    $form.Controls.Add($preserveButton)
+
+    $removeButton = [Windows.Forms.Button]::new()
+    $removeButton.Text = 'Uninstall and delete all data'
+    $removeButton.DialogResult = [Windows.Forms.DialogResult]::No
+    $removeButton.Font = [Drawing.Font]::new('Segoe UI', 9)
+    $removeButton.Location = [Drawing.Point]::new(240, 132)
+    $removeButton.Size = [Drawing.Size]::new(206, 40)
+    $form.Controls.Add($removeButton)
+
+    $cancelButton = [Windows.Forms.Button]::new()
+    $cancelButton.Text = 'Cancel'
+    $cancelButton.DialogResult = [Windows.Forms.DialogResult]::Cancel
+    $cancelButton.Location = [Drawing.Point]::new(454, 132)
+    $cancelButton.Size = [Drawing.Size]::new(80, 40)
+    $form.Controls.Add($cancelButton)
+
+    $form.AcceptButton = $preserveButton
+    $form.CancelButton = $cancelButton
+    $choice = $form.ShowDialog()
+    $form.Dispose()
+    if ($choice -notin @([Windows.Forms.DialogResult]::Yes, [Windows.Forms.DialogResult]::No)) { return }
+    $RemoveAllData = $choice -eq [Windows.Forms.DialogResult]::No
+    $PreserveData = $choice -eq [Windows.Forms.DialogResult]::Yes
 }
 
 function Get-RequiredKnownFolder {
@@ -139,7 +186,7 @@ $desktopShortcut = Join-Path $desktopRoot 'Wellbeing Companion (Working Title).l
 $startMenuShortcut = Join-Path $startMenuFolder 'Wellbeing Companion (Working Title).lnk'
 $uninstallShortcut = Join-Path $startMenuFolder 'Uninstall Wellbeing Companion (Working Title).lnk'
 $powerShellPath = Join-Path $systemRoot 'WindowsPowerShell\v1.0\powershell.exe'
-$uninstallArguments = "-NoProfile -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`""
+$uninstallArguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$installedUninstaller`""
 $uninstallRegistryPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\WellbeingCompanionWorkingTitle'
 
 # Preflight every destructive target before changing any state.
@@ -158,7 +205,42 @@ try {
 } catch {
     throw "Cannot safely prove Wellbeing Companion is closed; uninstall is refusing to continue. Nothing was removed. $($_.Exception.Message)"
 }
-if ($running.Count -gt 0) { throw 'Close Wellbeing Companion completely before uninstalling. Nothing was removed.' }
+$expectedExecutablePath = [IO.Path]::GetFullPath($installedExecutable)
+$ownedRunningProcesses = @()
+foreach ($process in $running) {
+    if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
+        throw "Cannot safely identify a running Wellbeing Companion process. Close it manually and retry. Nothing was removed. Process id: $($process.ProcessId)"
+    }
+    $processExecutablePath = [IO.Path]::GetFullPath([string]$process.ExecutablePath)
+    if ($processExecutablePath.Equals($expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $ownedRunningProcesses += $process
+    }
+}
+
+# A normal uninstall closes only the exact executable owned by this verified install.
+# It never stops a same-named process from another directory.
+foreach ($process in $ownedRunningProcesses) {
+    Stop-Process -Id ([int]$process.ProcessId) -ErrorAction Stop
+}
+foreach ($process in $ownedRunningProcesses) {
+    try {
+        Wait-Process -Id ([int]$process.ProcessId) -Timeout 8 -ErrorAction Stop
+    } catch {
+        Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction SilentlyContinue
+        Wait-Process -Id ([int]$process.ProcessId) -Timeout 4 -ErrorAction SilentlyContinue
+    }
+}
+
+try {
+    $stillRunning = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $_.Name -eq 'WellbeingCompanionWorkingTitle.exe' -and
+        -not [string]::IsNullOrWhiteSpace([string]$_.ExecutablePath) -and
+        [IO.Path]::GetFullPath([string]$_.ExecutablePath).Equals($expectedExecutablePath, [StringComparison]::OrdinalIgnoreCase)
+    })
+} catch {
+    throw "Cannot safely confirm Wellbeing Companion closed after requesting shutdown. Nothing was removed. $($_.Exception.Message)"
+}
+if ($stillRunning.Count -gt 0) { throw 'Wellbeing Companion did not close cleanly, so uninstall stopped before removing files.' }
 
 if ($RemoveAllData) {
     Remove-PreflightedOwnedDirectory -Path $localDataRoot
@@ -174,6 +256,15 @@ Remove-PreflightedOwnedDirectory -Path $installFolder
 if (Test-Path -LiteralPath $uninstallRegistryPath) {
     Assert-OwnedUninstallRegistryKey -Path $uninstallRegistryPath -ExpectedInstallFolder $installFolder
     Remove-Item -LiteralPath $uninstallRegistryPath -Recurse -Force
+}
+
+if ($interactiveUninstall) {
+    [Windows.Forms.MessageBox]::Show(
+        'Wellbeing Companion was uninstalled.',
+        'Uninstall complete',
+        [Windows.Forms.MessageBoxButtons]::OK,
+        [Windows.Forms.MessageBoxIcon]::Information
+    ) | Out-Null
 }
 
 [pscustomobject]@{

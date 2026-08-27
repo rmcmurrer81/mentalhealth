@@ -57,6 +57,39 @@ describe("optional birthday age memory", () => {
     expect(steadyEnhancementEligible("I'll be 32.", reply)).toBe(false);
   });
 
+  it("learns the stated upcoming age in the same introduction as the name and birthday", () => {
+    const reply = respond(
+      "My name is Avery. My birthday is next Saturday, August 29, and I'm going to be 22.",
+      defaultProfile(),
+      learnedOn,
+    );
+    expect(reply.learned).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "identity", label: "Preferred name", value: "Avery" }),
+      expect.objectContaining({ kind: "milestone", label: "Birthday", value: "2026-08-29" }),
+      expect.objectContaining({ kind: "milestone", label: "Birthday age", value: "22 on 2026-08-29", sensitive: true }),
+    ]));
+    expect(reply.text).toContain("remember 22");
+    expect(reply.text).not.toContain("How old will you be");
+  });
+
+  it("prefers one clear upcoming birthday age over a separately stated current age", () => {
+    const reply = respond(
+      "My birthday is next Saturday. I'm 21 years old now, and I'm going to be 22.",
+      defaultProfile(),
+      learnedOn,
+    );
+    expect(reply.learned.find((entry) => entry.label === "Birthday age")?.value).toBe("22 on 2026-08-29");
+  });
+
+  it.each([
+    "My birthday is next Saturday. I'm going to be 22 or 23.",
+    "My birthday is next Saturday. I think I'm going to be 22.",
+    "My birthday is next Saturday. I'm going to be 22, but I'll be 23.",
+  ])("does not save an unresolved or uncertain upcoming age: %s", (text) => {
+    const reply = respond(text, defaultProfile(), learnedOn);
+    expect(reply.learned.some((entry) => entry.label === "Birthday age")).toBe(false);
+  });
+
   it("replaces rather than duplicates an explicitly corrected age", () => {
     const profile = profileWithBirthday();
     profile.memories.push(createBirthdayAgeMemory(31, "2026-08-29"));
@@ -64,6 +97,15 @@ describe("optional birthday age memory", () => {
     const merged = mergeMemories(profile.memories, reply.learned).filter((entry) => entry.label === "Birthday age");
     expect(merged).toHaveLength(1);
     expect(merged[0].value).toBe("32 on 2026-08-29");
+  });
+
+  it("replaces a just-learned upcoming age after a plain-language correction", () => {
+    const profile = profileWithBirthday();
+    profile.memories.push(createBirthdayAgeMemory(22, "2026-08-29"));
+    const reply = respond("I meant 23, not 22.", profile, beforeBirthday);
+    const merged = mergeMemories(profile.memories, reply.learned).filter((entry) => entry.label === "Birthday age");
+    expect(merged).toHaveLength(1);
+    expect(merged[0].value).toBe("23 on 2026-08-29");
   });
 
   it("gently confirms a repeated old age one birthday year later before changing memory", () => {

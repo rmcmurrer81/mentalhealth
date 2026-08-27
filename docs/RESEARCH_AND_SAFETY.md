@@ -63,11 +63,168 @@ Voice output now crosses a provider-neutral `status` / `speak` / `cancel` client
 
 ## Reproducible evaluation
 
-The 2026-08-25 source snapshot passed 433 source tests across 25 files and 70 reported suites, including all 11 memory-generation/privacy-session regressions, all 5 hands-free control tests, and 3 drawer-accessibility/privacy-wording tests, plus 57 additional hostile scenarios and 51 native-shell tests; TypeScript compilation, the production build, desktop syntax checks, and both static preview hash bindings also passed. The hands-free group contains two genuine buffered interim/final callback interleavings after lock and guardian unlock. Combined automated coverage includes everyday conversation, anger, grief, bullying and retaliation boundaries, tentative affect cues, explainability receipts, birthday date resolution (including today and relative weekdays), correction, annual recurrence, and same-day deduplication, medication ambiguity and duplicate-dose risk, acute overdose and injury, self-harm language, violence risk, third-party concern, fiction-versus-lived-fact memory isolation, bounded relationship-name recall, missing-memory deterministic routing, provenance-linked transcript deletion, Nina Simone name-collision preservation, delayed local-model reply refresh after Forget, privacy-session invalidation across primary/guardian and same-profile relock, vault-creation mutation blocking, recognition-callback isolation, app-level send/speech/hands-free quiescence wiring, local-model provenance/fallback behavior, approved voice-selector isolation, and drawer labeling/focus behavior. The machine-readable known-defects register contains 0 open entries for this tested source snapshot; that is not a claim that the software can have no defects. The matching Windows archive contains this 433-test accessibility/privacy revision, is unsigned, and passed three consecutive packaged-process smokes. Its exact size and SHA-256 are recorded outside the archive in the matching sidecar, package receipt, and sanitized verification evidence. The isolated lifecycle harness passed using the exact sealed payload, but it did not execute the real installer or mutate a real user profile. A disposable Windows-user or VM installer run and a publisher-signed public build remain pending. These results establish repeatable software behavior; they do not establish clinical efficacy or replace evaluation with clinicians and lived-experience reviewers.
+### Historical 0.2.2 checkpoint — superseded
+
+The next paragraph is retained verbatim as historical 0.2.2 evidence. References to
+the “current” source or candidate inside that paragraph describe its original
+checkpoint only; they do not describe the present candidate. The current candidate
+is 0.2.8 and is summarized under “0.2.8 memory, conflict-context, and breathing repair” below.
+
+The current 2026-08-26 source candidate passed 1,621 source tests across 28 files, including 20 focused procedural-3D and production-distribution checks, as well as all prior memory-generation/privacy-session, hands-free, and drawer-accessibility/privacy-wording regressions; the independent hostile probe passed 57/57, and TypeScript compilation and the production build passed on the current source. The 3D checks cover geometry, head-parent hierarchy, mount-once renderer lifecycle, articulation, movement, unequal curved expressions, five preview visemes, depth, lighting, reduced motion, and exclusion of concept PNGs from production output. Social rehearsal coverage exercises fear-of-ridicule coaching, a fictional introduction/small-talk/exit loop, every visible retry/return action, an unrelated “practice again” false-positive, profile and care-plan non-persistence, and self-versus-third-party acute-medical interruption. The hands-free group contains two genuine buffered interim/final callback interleavings after lock and guardian unlock. Combined automated coverage also includes everyday conversation, anger, grief, bullying and retaliation boundaries, tentative affect cues, explainability receipts, birthday date resolution and correction, medication ambiguity, and a structured ingestion event graph that composes actor identity, evidence source, factuality and temporal frame, action sense, bound object, and quantity rather than enumerating complete sentences. Generated and hostile probes cover direct speech, quoted addressees, witness and passive syntax, preposed objects, completed and future first- and third-party disclosures, unresolved uncertainty, counterfactuals, retracted intent, remote history, routine prescribed use, transport/media/task/food false-positive boundaries, numeric and word quantities, mixed ownership, suppression of memory and care-plan persistence during urgent or unresolved turns, and sentence-bounded prescriber/label schedule language. Memory coverage includes Unicode and honorific relationship names, question/doubt/retraction factuality guards, atomic achievement/interest learning, Unicode-punctuation cleanup, appositive relationship identities, transient-event separation, fiction-versus-lived-fact isolation, bounded relationship-name recall, transcript-aware deletion, and delayed local-model reply refresh after Forget. Coverage also includes acute injury, self-harm language, violence risk, third-party concern, privacy-session invalidation across primary/guardian and same-profile relock, vault-creation mutation blocking, recognition-callback isolation, local-model provenance/fallback behavior, approved voice-selector isolation, and drawer labeling/focus behavior. The known-defects register is not treated as proof of completeness; release blockers remain explicit. Current unsigned Windows candidate `Wellbeing-Companion-Working-Title-Setup-0.2.2-win32-x64.zip` contains this source snapshot, is 150,913,694 bytes, and has SHA-256 `D272F4030E1BD5F014C720905CD3B92BD648D42831E906C12B5F4F48213D6B20`. Evidence set `20260826T101439163Z-2b6fb877` retained three distinct passing exact-package runs on Windows build 26200. Every sanitized run records a distinct native title and decoded custom icon, tray, renderer sandboxing, `webgl-3d-motion`, `motionTick: 15`, `waving: true`, `movementObserved: true`, an inactive local voice provider with no system-voice fallback, and recovery from a denied hands-free request into a completed deterministic typed reply. A preceding long-path run of the same sealed ZIP also proved the root double-click setup executable, PowerShell confined beneath `Support`, absence of root `.ps1` files, verification without profile mutation, and receipt-tamper rejection. Its temporary-root lifecycle harness passed without executing the real installer or mutating a real user profile. Earlier archives remain preserved as historical evidence. A disposable Windows-user or VM owner installer run and publisher-signed public build remain pending. These results establish repeatable software behavior; they do not establish clinical efficacy or replace evaluation with clinicians and lived-experience reviewers.
+
+### 0.2.3 verification supersession
+
+The preceding 0.2.2 paragraph is retained as historical evidence. Candidate 0.2.3
+supersedes it after the live UI regression repair: 1,626/1,626 source tests passed
+across 28 files, 55/55 desktop-shell tests and syntax checks passed, and the final
+unsigned ZIP is 150,914,033 bytes with SHA-256
+`4CC4C804B53DDEE048A4E0D381B763870F5C940E259AB7D348D2151A6E031612`.
+Evidence set `20260826T120810027Z-1ae624e4` retained three distinct passing
+packaged launches bound to that exact hash. The exact-payload isolated lifecycle
+harness also passed preserve-data uninstall, reinstall recovery, and explicit
+remove-all without executing the real installer or mutating a real user profile.
+
+### 0.2.4 verification supersession
+
+The preceding 0.2.3 paragraph is retained as historical evidence. Candidate 0.2.4
+supersedes it after the birthday-age, appointment-provider, general nighttime
+medication-schedule, and urgent-options interaction repairs: 1,640/1,640 source
+tests passed across 29 files, 55/55 desktop-shell tests and syntax checks passed,
+and the final unsigned ZIP is 150,914,569 bytes with SHA-256
+`FB16A75803172F46AFC0F48612C0891866165A8814221A56453570079786ED92`.
+Evidence set `20260826T141748393Z-765589b3` retained three distinct passing
+packaged launches bound to that exact hash. The exact-payload isolated lifecycle
+harness also passed preserve-data uninstall, reinstall recovery, and explicit
+remove-all without executing the real installer or mutating a real user profile.
+Live browser checks with fictional data additionally confirmed corrected age,
+appointment-provider, part-of-day medication, urgent-options, reload persistence,
+and an already-loaded offline deterministic interest-grounded reply. Those checks
+do not establish full network isolation, live voice output, microphone operation,
+clinical validation, hackathon eligibility, signing, installation, or publication.
+
+### 0.2.5 startup-reliability supersession
+
+This section is retained as historical 0.2.5 evidence and is superseded by 0.2.6
+below.
+
+Candidate 0.2.4 is retained only as superseded, unaccepted historical evidence.
+Its purported independent failure ran under the same invalid restricted-token/
+profile context later identified for 0.2.5 and therefore does not prove an
+intermittent product defect. Its remaining evidence lacked a valid current
+real-user default-Temp gate, so it must not be staged or owner-tested. Candidate
+0.2.5 warms the persistent partition's network context
+against the loopback health endpoint before navigation and expands only that specific startup condition
+to a bounded 24-retry, 250-millisecond window. Unrelated navigation errors still
+fail immediately, and an exhausted retry window records its attempt evidence.
+
+The 0.2.5 source passed 1,640/1,640 tests across 29 files; the desktop shell passed
+57/57 tests plus JavaScript and PowerShell syntax; TypeScript and the production
+Vite build passed. The exact unsigned ZIP is 150,915,742 bytes with SHA-256
+`E3315AE1A0A1AD0B55D08FB9B146BAF6A77A328D58CD52EFDA05D69822D52235`.
+Repeated-run set `20260826T143206282Z-8ab8a4c4` retained 10/10 distinct passing
+launches from the nine-character short extraction base. Every run proved the
+persistent-partition health fetch, first-attempt navigation, native window/tray/icon, fixed
+loopback runtime, procedural WebGL wave, and denied-microphone typed recovery. The
+isolated exact-payload lifecycle also passed without executing the installer or
+mutating a real profile. This is still unsigned owner-test evidence, not generated
+voice, clinical validation, organizer eligibility, a real installation, or a
+published release. Three additional retained real-user runs from fresh default-Temp
+roots (`root-real-user-0.2.5-03`, `-04`, and `-05`) passed 3/3 on attempt 1 with
+zero retries and the same sealed hash. A restricted sandbox-identity run with a
+mismatched inherited profile/DPAPI context is preserved as `INVALID_ENVIRONMENT`,
+neither a product pass nor a product failure. Candidate 0.2.5 therefore remains on
+OWNER-TEST CANDIDATE HOLD pending the real owner acceptance flow.
+
+The current formal independent 0.2.5 recheck is
+[`../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.5_20260826.md`](../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.5_20260826.md).
+It records automated software, exact packaged process, and isolated lifecycle PASS,
+while owner installation/acceptance, live generated voice, audio-timed lip sync,
+clinical validation, hackathon eligibility, publication, and submission remain HOLD.
+
+### 0.2.6 child-process compatibility supersession — historical interim
+
+Two fresh checksum-verified 0.2.5 runs on Windows build 26200 reached the healthy
+private loopback runtime but exhausted all 25 bounded renderer-navigation attempts
+with `ERR_FAILED (-2)`. That reproducible current failure supersedes the older 0.2.5
+pass and rejects 0.2.5 as a current owner candidate.
+
+Candidate 0.2.6 applies a narrowly bounded Electron 43 compatibility path on Windows
+builds 26200-26399: the GPU and renderer process sandboxes are disabled, while
+context isolation remains enabled, Node integration and webviews remain disabled,
+renderer navigation remains fixed to `127.0.0.1`, and external renderer requests
+remain blocked. Other supported Windows builds retain both process sandboxes. This
+security tradeoff is disclosed and remains part of owner acceptance.
+
+The 0.2.6 source passed 1,640/1,640 tests, its explicit adversarial file passed 61/61,
+the separate hostile evaluator passed 57/57 with zero registered defects, and the
+desktop shell passed 57/57. The exact unsigned ZIP is 150,917,060 bytes with SHA-256
+`3C68BEFCBD6A2040687AE9BC726180B223C3CDB65F07C1BB6A65EBF74CB14779`.
+One direct exact-package process run and retained set
+`20260826T172043613Z-3f75c559` with 3/3 distinct runs passed. The isolated exact-
+payload lifecycle also passed without executing the real installer or mutating a
+real profile. The formal record is
+[`../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.6_20260826.md`](../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.6_20260826.md).
+Owner installation and visual acceptance, live generated voice, audio-timed lip
+sync, clinical validation, hackathon eligibility, publication, and submission remain
+on HOLD.
+
+### 0.2.7 sealed compatibility repair
+
+Candidate 0.2.7 rebuilds the bounded 0.2.6 compatibility repair so both packaged
+readmes and the package identity consistently name 0.2.7. The exact unsigned ZIP is
+150,916,722 bytes with SHA-256
+`FD977A7759285425702ECE9A903FE74C6E6926B0B1667C000F5A5AD6DC623361`.
+One named direct exact-package run passed, and retained set
+`20260826T173007516Z-67c8fb56` passed 3/3 distinct fresh extractions and native
+process launches. The exact-payload lifecycle harness also passed without executing
+the real installer or mutating a real profile. Final source evaluation passed
+1,640/1,640 tests, the hostile evaluator passed 57/57, a focused memory, birthday,
+privacy, offline, drawer, adversarial, and procedural-3D rerun passed 376/376, and
+the desktop shell passed 57/57.
+
+The exact package proves a custom native window and icon, notification-area tray,
+fixed-loopback offline renderer, completed typed conversation after microphone
+denial, and a live articulated WebGL wave. Source-level 3D tests additionally prove
+the joyful hop, expressions, guided breathing, and distinct preview mouth shapes.
+They do not prove generated voice or audio-timed lip sync. Owner installation and
+visual acceptance, the Windows 26200-26399 compatibility tradeoff, signing, clinical
+validation, organizer eligibility, publication, video, and submission remain on
+HOLD. The formal record is
+[`../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.7_20260826.md`](../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.7_20260826.md).
+
+### 0.2.8 memory, conflict-context, and breathing repair
+
+Candidate 0.2.8 supersedes 0.2.7 after a clean-origin fictional journey exposed two
+conversation defects: a cousin memory could absorb a following birthday clause and
+later echo `important to me` from the companion's perspective, while the built-in
+60-second reset entered guided 3D motion but returned a generic text reply. The new
+source bounds the person clause, renders first-person relationship details from the
+user's perspective, consults recent conflict and a request for space before answering
+a combined identity/contact question, and supplies the breathing guidance promised by
+the reset control.
+
+The 0.2.8 source passed 1,644/1,644 tests across 29 files, TypeScript compilation and
+the Vite build passed, and the desktop shell passed 57/57 tests plus JavaScript and
+PowerShell syntax. The exact unsigned ZIP is 150,920,861 bytes with SHA-256
+`AB7F4E086E1083F3F636072A0F6EE165DC5819CCF9883044AC16E3C3365FD72A`.
+One named exact-package verification and retained run set
+`20260826T192927459Z-c34cc8c9` passed; the retained set contains 3/3 distinct runs
+bound to that hash. The exact-payload temporary-root lifecycle passed shortcut and
+Installed Apps shapes, preserve-data uninstall, reinstall recovery, and explicit
+remove-all without executing the real installer or mutating a real user profile.
+
+A clean-origin browser replay additionally confirmed the corrected cousin/birthday/
+space scenario, the real WebGL canvas and advancing motion ticks for wave, happy, and
+guided-breathing states, the corrected breathing reply, and zero browser warnings or
+errors. This is still automated software evidence, not clinical validation, generated
+voice, audio-timed lip sync, a real-profile installation, or owner visual acceptance.
+Signing, the Windows 26200-26399 compatibility tradeoff, organizer eligibility,
+publication, video, and submission remain on HOLD. The formal record is
+[`../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.8_20260826.md`](../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.8_20260826.md).
 
 ## Asset provenance
 
-The warm-plum and light-blue mascot state sets were generated specifically for this project on 2026-08-24 using OpenAI's built-in image-generation tool. They are original working assets, contain no real person, and use no third-party trademark or character reference. The production set contains neutral, concerned, happy, and waving states for each appearance on solid local backgrounds; earlier source variants remain preserved outside the runtime selection. Final submission materials will disclose generated imagery.
+The warm-plum and light-blue concept images were generated specifically for this project on 2026-08-24 using OpenAI's built-in image-generation tool. They are original working references, contain no real person, and use no third-party trademark or character reference. The application runtime does not load or swap those images. It now constructs the companion from indexed three-dimensional mesh vertices and normals in WebGL, with perspective projection, depth testing, lighting, and separately transformed wings, body, head, limbs, face, and multi-part heart lantern. The renderer preserves the concept's two color identities while supporting articulated idle, listening, waving, guided-breathing, happy-hop, expression, and bounded preview-viseme poses. If WebGL is unavailable, the app clearly labels a deterministic procedural 2D compatibility fallback as not 3D. The typed mouth rig accepts rest, jaw-open, wide, rounded, and lip-contact shapes and can later consume reviewed English, Spanish, or French timing cues; its current speaking sequence is only a bounded visual preview, not a claim of audio-accurate lip sync.
 
 ## Current track fit
 

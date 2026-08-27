@@ -3,7 +3,8 @@
 This folder packages the current working-title companion as an independent Windows
 application. It does not open in Chrome or Edge. The packaged executable starts a
 small static service bound only to `127.0.0.1:43724` and loads the production Vite
-build in a sandboxed Electron window. Conversation, deterministic safety routing,
+build in an Electron window with context isolation and Node integration disabled.
+Conversation, deterministic safety routing,
 local memory, reminders, interest packs, and the optional encrypted vault can run
 without internet access.
 
@@ -21,11 +22,20 @@ does not pre-empt that choice.
   `%APPDATA%\WellbeingCompanionWorkingTitle\UserData`, outside the program folder.
   Ordinary uninstall preserves both local and roaming companion data. Removing all
   data is a separate explicit choice.
-- The renderer is sandboxed with context isolation, no Node integration, no webviews,
-  and no renderer access to Electron APIs beyond a narrow preload bridge.
+- The renderer uses context isolation, no Node integration, no webviews, and no
+  renderer access to Electron APIs beyond a narrow preload bridge.
+- On Windows builds 26200-26399 only, Electron 43 uses a disclosed child-process
+  compatibility path that disables the GPU and renderer process sandboxes after
+  repeatable child-process launch failures. The fixed loopback origin, navigation
+  restrictions, context isolation, disabled Node integration, and disabled webviews
+  remain enforced. Other supported builds retain the renderer and GPU sandboxes.
 - Renderer HTTP(S) requests are blocked unless they target the fixed companion
   loopback origin. External HTTPS and email links require confirmation and open in
   the operating-system default app.
+- Before the first window navigation, the persistent partition's network context
+  verifies the fixed loopback health endpoint. Only an `ERR_FAILED (-2)` startup
+  result receives a bounded 24-retry, 250-millisecond window with
+  explicit attempt evidence; unrelated navigation errors still fail closed.
 - Microphone access is not requested at startup. Clicking hands-free invokes the
   narrow preload bridge, opens a default-deny native prompt, and temporarily arms
   audio-only access. Stopping or hiding the app disarms it. Camera, display capture,
@@ -35,12 +45,14 @@ does not pre-empt that choice.
   unavailable or backed by a device/vendor online service; this package does not
   claim guaranteed offline speech recognition.
 - The renderer and preload expose only a versioned `status` / `speak` / `cancel`
-  local-voice contract. Main-process validation requires an approved, active,
-  local-only provider plus playback readiness, but the shipped provider is
-  deliberately inactive. The local-voice surface exposes no synthesis capability
-  token, voice/model identifier, or generated-audio path to the renderer. Spoken
-  output is therefore text-only and never falls
-  back to Chromium or a Windows system voice as though it were the selected preset.
+  local-voice contract. Candidate 0.2.12 connects it to a separately spawned,
+  authenticated loopback Chatterbox host using the two hash-bound original synthetic
+  references. The host forces offline model access, caps requests, owns playback,
+  and is terminated with the app. It never exposes its token, model identity, port,
+  or generated-audio path to the renderer. The roughly 3.2 GB model cache, Python
+  3.14 packages, and CUDA runtime remain external local dependencies and are not
+  bundled. If they are unavailable, complete text remains visible and no Chromium,
+  Windows, or named-person substitute voice is used.
 
 ## Optional local model boundary
 
@@ -77,13 +89,15 @@ pnpm --dir desktop-shell lint
 pnpm --dir desktop-shell pack:win
 pnpm --dir desktop-shell test:lifecycle
 pnpm --dir desktop-shell verify:win
+pnpm --dir desktop-shell verify:win:three
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File desktop-shell/scripts/Run-ThreePackagedSmokes.ps1 -RunCount 3
 ```
 
 The package builder pins Electron 43.4.1 and checks its official archive SHA-256
 before staging. It produces:
 
 - `release\win-unpacked\WellbeingCompanionWorkingTitle.exe`
-- `release\Wellbeing-Companion-Working-Title-Setup-0.1.0-win32-x64.zip`
+- `release\Wellbeing-Companion-Working-Title-Setup-0.2.12-win32-x64.zip`
 - the ZIP `.sha256.txt` sidecar and external `.receipt.json`
 - embedded build and setup receipts with exact file manifests
 
@@ -93,7 +107,20 @@ with isolated user data. The bounded smoke requires a real window, tray, branded
 renderer, fixed loopback health response, localStorage round trip, absent renderer
 `require`/`process`, unarmed microphone at startup, denied camera/display/device
 permissions, the static local-model boundary, and the three-method local-voice IPC
-boundary with no configured provider, verified playback, or system-voice fallback.
+boundary in fail-closed smoke mode with no provider activation, playback, or
+system-voice fallback. Exact authored-file verification separately binds the
+Chatterbox adapter, Python host, reviewed reference hashes, loopback/authentication/
+offline-only source boundaries, and absence of bundled model weights.
+It also requires the exact renderer-session warmup and bounded initial-navigation
+attempt receipt.
+
+`verify:win:three` invokes that verifier three times by default and archives each run
+before the next can overwrite the working receipt. The same script accepts a bounded
+`-RunCount 3..20`; counts above three write `REPEATED-RUN-SUMMARY.json`. It binds all
+distinct run IDs to one package hash and writes `PASS` only when every required run
+completes. Raw receipts remain local because they can include a Windows user-data
+path; a sanitized copy removes that field. Do not claim three retained runs merely
+because the wrapper exists, and do not publish raw receipts.
 
 `Test-IsolatedLifecycle.ps1` extracts the exact sealed payload beneath a unique temp
 root and exercises install-shaped files, Desktop/Start shortcut shapes, an
@@ -104,16 +131,17 @@ required before calling the actual installer lifecycle dynamically verified.
 
 ## Install and uninstall
 
-Extract the setup ZIP completely. Then run:
+Extract the setup ZIP completely, open the extracted folder, and double-click
+`SETUP-WELLBEING-COMPANION.exe`. Do not drag individual files out of the ZIP. The
+PowerShell implementation is deliberately kept beneath `Support` so ordinary setup
+does not open installer source in a text editor.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy RemoteSigned -File .\Install-WellbeingCompanion.ps1
-```
-
-The development executable may be Authenticode `NotSigned`. The installer verifies
-the exact setup/build receipts and then defaults to cancel unless the user explicitly
-accepts the checksum-verified unsigned build. `-AcceptVerifiedUnsignedRuntime` is the
-equivalent controlled-test acknowledgement; it does not make the executable signed.
+The development executable and setup launcher may be Authenticode `NotSigned`. The
+launcher verifies the exact setup/build receipts and opens a cancel-first warning;
+installation continues only when the user explicitly accepts the checksum-verified
+unsigned build. `-AcceptVerifiedUnsignedRuntime` is an internal controlled-test
+acknowledgement used by the receipt-bound support script; it does not make either
+executable signed.
 
 Installed Apps or the Start-menu uninstall shortcut offers preservation by default
 and a separate explicit remove-all choice. Managed removal can use `-PreserveData` or
@@ -126,17 +154,30 @@ boundaries, shortcuts, the uninstall key, and reparse points before deletion.
 - The real installer/preserve/reinstall/remove-all flow needs a disposable Windows
   user or VM; this lane does not mutate the current user's profile.
 - Packaged speech recognition remains device-dependent. The local-speech IPC broker
-  is fail-closed and its shipped provider is inactive; real synthesis and audible
-  playback are not connected or claimed. A later provider integration requires a
-  rebuild, full end-to-end listening checks, and a new package seal.
-- The current 433-test archive includes the provider-neutral renderer, inactive
-  fail-closed local-voice broker, static previews, multi-clause memory extraction,
-  deterministic recall, provenance-linked transcript forgetting, privacy-session
-  invalidation, vault-transition guards, and buffered speech-recognition callback
-  isolation, plus the three-test drawer-accessibility/privacy-language repair. It
-  passed three consecutive packaged-process smokes. It remains an unsigned test
-  candidate; use it only with its matching sidecar, package receipt, and sanitized
-  verification evidence, which record the exact final archive size and SHA-256.
+  is fail-closed. One bounded source-provider probe on the development computer
+  loaded the already-cached Chatterbox model, synthesized a generic female line,
+  and confirmed local playback. The exact installed 0.2.12 package has not yet
+  repeated that audible test, and other computers without the external Python/CUDA/
+  cache dependencies remain text-only. Owner discovery, playback, mute, and cleanup
+  testing are still required.
+- Candidate 0.2.12 contains the current 1,663-test source and 69-test desktop shell,
+  adds default always-on-top behavior (with an explicit unpin control) to the compact
+  character-first and character-only window modes, and supersedes
+  0.2.8 plus the earlier repair packages. Two fresh exact 0.2.5 runs reached the healthy loopback
+  runtime but exhausted every bounded renderer-navigation attempt. Candidate 0.2.12
+  repairs that current failure with the disclosed build-26200-26399 child-process
+  compatibility boundary. It remains on unsigned OWNER-TEST CANDIDATE HOLD. Use it only with
+  its matching sidecar, package receipt, and current sanitized verification evidence.
+  Its packaged-process probe must prove
+  genuine WebGL motion and wave, distinct native identity and custom icon, a
+  fail-closed smoke voice boundary with no system-voice fallback, and recovery from denied
+  hands-free permission to a completed typed deterministic reply. Setup verification
+  must also prove the root double-click launcher, PowerShell confined to `Support`,
+  absence of root `.ps1` files, receipt-tamper rejection, and a safe Explorer path
+  budget. Use only the matching external SHA-256 sidecar and current verification
+  evidence; those are generated after the archive and therefore are not copied into
+  the archive's self-description. Earlier packages and their receipts remain intact
+  as historical evidence.
 - Optional Ollama wording is not a clinical model and does not replace the
   deterministic safety classifier or response validator.
 - No hosted URL, public repository, cloud AI, email connector, upload, or hackathon

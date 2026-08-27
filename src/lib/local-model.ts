@@ -40,6 +40,15 @@ export interface WellbeingDesktopBridge {
   requestHandsFreePermission(): Promise<boolean>;
   armMicrophone(): Promise<boolean>;
   disarmMicrophone(): void;
+  setWindowMode?(mode: "full" | "compact" | "character"): Promise<{
+    mode: "full" | "compact" | "character";
+    alwaysOnTop: boolean;
+    rejected?: boolean;
+    bounds?: { x?: number; y?: number; width: number; height: number };
+  }>;
+  onWindowModeChanged?(listener: (mode: "full" | "compact" | "character") => void): () => void;
+  setAlwaysOnTop?(enabled: boolean): Promise<boolean>;
+  hideWindow?(): void;
   localModel: {
     status(): Promise<{
       available: boolean;
@@ -69,7 +78,7 @@ export interface EnhancementDecision {
 }
 
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
-const HEALTH_BOUNDARY = /\b(?:suicid|kill myself|end my life|hurt myself|harm myself|want to die|wish i (?:was|were) dead|jump (?:off|from)|bridge|roof|ledge|overdose|swallowed|ingested|bleeding|cut myself|stabbed myself|shot myself|medication|medicine|meds?|dose|dosage|pill|prescription|poison|bleach|diagnos|disorder|treatment|therapy|therapist|psychiat|psycholog|doctor|clinician|hospital|crisis|988|911|emergency|bully|bullied|bullying|harass|threat|weapon|gun|knife|stalk|attack|violence|abuse|assault|report|reporting|snitch|died|passed away|grief|grieving|bereave|loss)\b/i;
+const HEALTH_BOUNDARY = /\b(?:suicid|kill myself|end my life|hurt myself|harm myself|want to die|(?:don't|do not|no longer) want to be alive|wish i (?:was|were) dead|jump (?:off|from)|bridge|roof|ledge|overdose|swallowed|ingested|bleeding|cut myself|stabbed myself|shot myself|medication|medicine|meds?|dose|dosage|pill|prescription|poison|bleach|diagnos|disorder|treatment|therapy|therapist|psychiat|psycholog|doctor|clinician|hospital|crisis|988|911|emergency|bully|bullied|bullying|harass|threat|weapon|gun|knife|stalk|attack|violence|abuse|assault|report|reporting|snitch|died|passed away|grief|grieving|bereave|loss)\b/i;
 const PROTECTED_RELATIONSHIP_AND_RECALL_BOUNDARY = /\b(?:i may be reading too much into that|am i reading that right|thanks for correcting me|thank you for telling me i read that correctly|i remember that you|you told me|i don't have a saved preference|i don't have a saved detail identifying|your synthetic friend|i remembered your birthday as|if i understood the date wrong|happy birthday|how old will you be|how old are you today|birthday mix-up|birthday age|conflicting ages|won't save an age|never have to share it)\b/i;
 const PRIVATE_DETAIL = /(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b)|(?:\b(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}\b)/gi;
 const UNSAFE_CANDIDATE = /(?:<\/?think>|\b(?:system|developer|assistant)\s*:|https?:\/\/|\[[^\]]+\]\([^)]+\)|\b(?:as an ai|i am human|i'm human)\b|\b(?:you have|you definitely have|you are suffering from)\s+(?:depression|bipolar|autism|adhd|ptsd|psychosis|a disorder)|\b(?:double|increase|decrease|stop|start|skip|change|adjust)\b.{0,60}\b(?:dose|medication|medicine|meds?|prescription)|\b(?:call|text|contact)\s+(?:988|911|a crisis|emergency services|the police))/i;

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { applyAdherenceSignal, appointmentReminder, extractCarePlans, medicationReminder, mergeAppointmentPlans, mergeMedicationPlans } from "../src/lib/reminders";
+import { respond } from "../src/lib/companion";
+import { defaultProfile } from "../src/lib/memory";
+import { applyAdherenceSignal, appointmentReminder, extractCarePlans, medicationReminder, medicationScheduleIntent, mergeAppointmentPlans, mergeMedicationPlans } from "../src/lib/reminders";
 
 describe("adaptive reminders", () => {
   const now = new Date("2026-08-24T09:05:00");
@@ -51,6 +53,55 @@ describe("adaptive reminders", () => {
     expect(plans.medications[0]).toMatchObject({ name: "Sertraline", scheduleLabel: "every morning", time: "09:00" });
   });
 
+  it.each([
+    ["My doctor prescribed Fictionaline every morning.", "Fictionaline", "every morning", "09:00"],
+    ["Dr. Vega told me to take Novamed at 8:30 p.m.", "Novamed", "at 8:30 p.m", "20:30"],
+    ["I was prescribed Calmade nightly.", "Calmade", "nightly", "21:00"],
+    ["I've been prescribed Solacein each evening.", "Solacein", "each evening", "21:00"],
+    ["My prescriber has me take Brightaline at 07:15.", "Brightaline", "at 07:15", "07:15"],
+    ["My doctor prescribed Fictionaline to me every morning.", "Fictionaline", "every morning", "09:00"],
+    ["My doctor said to take Fictionaline every morning.", "Fictionaline", "every morning", "09:00"],
+    ["The medication label says to take Fictionaline every night.", "Fictionaline", "every night", "21:00"],
+    ["My doctor prescribed Lunexa once at night.", "Lunexa", "once at night", "21:00"],
+    ["The medication label says to take Lunexa once at night.", "Lunexa", "once at night", "21:00"],
+  ])("accepts a common user-reported prescribed schedule: %s", (text, name, scheduleLabel, time) => {
+    expect(extractCarePlans(text, now).medications).toEqual([
+      expect.objectContaining({ name, scheduleLabel, time }),
+    ]);
+    expect(medicationScheduleIntent(text)).toMatchObject({ status: "scheduled", name, scheduleLabel, time });
+  });
+
+  it("keeps an honorific and surname intact while saving the adjacent prescribed night routine", () => {
+    const text = "I have an appointment tomorrow at 3 PM with Dr. Lee. My doctor prescribed Lunexa once at night. Please remind me.";
+    const plans = extractCarePlans(text, now);
+    expect(plans.appointments).toHaveLength(1);
+    expect(new Date(plans.appointments[0].dateTime).getHours()).toBe(15);
+    expect(plans.medications).toEqual([
+      expect.objectContaining({ name: "Lunexa", scheduleLabel: "once at night", time: "21:00", partOfDayOnly: true }),
+    ]);
+    expect(medicationScheduleIntent(text)).toMatchObject({
+      status: "scheduled",
+      name: "Lunexa",
+      scheduleLabel: "once at night",
+      partOfDayOnly: true,
+    });
+    const reply = respond(text, defaultProfile(), now);
+    expect(reply.text).toContain("saved Lunexa");
+    expect(reply.text).toContain("once at night");
+    expect(reply.text).toContain("general part-of-day reminder window");
+    expect(reply.text).not.toContain("missing or ambiguous");
+    expect(reply.text).not.toContain("9:00 PM");
+  });
+
+  it.each([
+    "My doctor prescribed Fictionaline.",
+    "My doctor prescribed Fictionaline daily.",
+    "Dr. Vega told me to take Fictionaline at 8.",
+  ])("holds a medication reminder for clarification when timing is missing or ambiguous: %s", (text) => {
+    expect(extractCarePlans(text, now).medications).toEqual([]);
+    expect(medicationScheduleIntent(text)).toMatchObject({ status: "needs-timing", name: "Fictionaline" });
+  });
+
   it("turns a user-entered appointment into a dated reminder plan", () => {
     const plans = extractCarePlans("I have a doctor appointment tomorrow at noon.", now);
     expect(plans.appointments).toHaveLength(1);
@@ -64,6 +115,15 @@ describe("adaptive reminders", () => {
   it("does not invent a reminder time when the user did not provide a schedule", () => {
     const plans = extractCarePlans("I take Sertraline.", now);
     expect(plans.medications).toHaveLength(0);
+  });
+
+  it.each([
+    "My doctor said to take Fictionaline every morning. I swallowed an entire bottle.",
+    "My doctor said to take Fictionaline every morning. I doubled my dose.",
+    "The medication label says to take Fictionaline every morning. I took twice as much as prescribed.",
+    "The medication label says to take Fictionaline every morning. I took an extra dose.",
+  ])("does not extract routine care-plan data from an acute turn: %s", (text) => {
+    expect(extractCarePlans(text, now)).toEqual({ medications: [], appointments: [] });
   });
 
   it("deduplicates care plans learned more than once", () => {

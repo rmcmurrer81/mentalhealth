@@ -1,9 +1,10 @@
 'use strict';
 
-// Electron 43's out-of-process GPU sandbox currently crashes on the Windows
-// Insider 25H2 build family. Keep this exception deliberately small and make
-// it observable in the packaged-process receipt. It does not alter renderer
-// sandboxing, context isolation, or Node integration.
+// Electron 43's sandboxed GPU and renderer child processes currently fail to
+// launch on the Windows Insider 25H2 build family. Keep this exception
+// deliberately small and observable in the packaged-process receipt. Context
+// isolation stays enabled, Node integration stays disabled, webviews stay
+// disabled, and the renderer remains restricted to the fixed loopback origin.
 const AFFECTED_WINDOWS_BUILD_MIN = 26200;
 const AFFECTED_WINDOWS_BUILD_MAX = 26399;
 const FORCE_GPU_SANDBOX_ARGUMENT = '--force-gpu-sandbox';
@@ -30,19 +31,23 @@ function resolveGpuSandboxCompatibility({ platform, release, argv, env } = {}) {
     && windowsBuild >= AFFECTED_WINDOWS_BUILD_MIN
     && windowsBuild <= AFFECTED_WINDOWS_BUILD_MAX;
   const disableGpuSandbox = platform === 'win32' && affectedWindowsBuild && !forceGpuSandbox;
+  const disableRendererSandbox = platform === 'win32' && affectedWindowsBuild && !forceGpuSandbox;
 
   return Object.freeze({
     disableGpuSandbox,
+    disableRendererSandbox,
     forceGpuSandbox,
     platform: platform ?? null,
     windowsBuild,
+    affectedWindowsBuild,
     affectedWindowsBuildRange: `${AFFECTED_WINDOWS_BUILD_MIN}-${AFFECTED_WINDOWS_BUILD_MAX}`,
     startupSettleMs: disableGpuSandbox ? AFFECTED_BUILD_STARTUP_SETTLE_MS : 0,
-    reason: disableGpuSandbox
-      ? 'Windows 25H2 GPU sandbox compatibility path for Electron 43'
+    rendererSandboxUnaffected: !disableRendererSandbox,
+    reason: disableGpuSandbox || disableRendererSandbox
+      ? 'Windows 25H2 GPU and renderer child-process compatibility path for Electron 43'
       : forceGpuSandbox
-        ? 'GPU sandbox explicitly forced for compatibility retesting'
-        : 'GPU sandbox compatibility path not required',
+        ? 'GPU and renderer sandboxes explicitly forced for compatibility retesting'
+        : 'GPU and renderer sandbox compatibility path not required',
   });
 }
 

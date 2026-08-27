@@ -1,4 +1,5 @@
 import type { SafetyLevel } from "./types";
+import { analyzeIngestionRisk } from "./ingestion-risk";
 
 const urgentPatterns = [
   /\bkill myself\b/i,
@@ -15,6 +16,7 @@ const urgentPatterns = [
   /\bnot safe (?:with|around) myself\b/i,
   /\bdon't want to (?:be here|live|wake up)\b/i,
   /\bdo not want to (?:be here|live|wake up)\b/i,
+  /\bi (?:feel like )?(?:don't|do not|no longer) want to be alive\b/i,
   /\bwish I (?:was|were) dead\b/i,
   /\beveryone (?:would be|is) better off without me\b/i,
   /\b(?:have|made|wrote|written) (?:a )?suicide (?:plan|note)\b/i,
@@ -28,17 +30,6 @@ const urgentPatterns = [
   /\b(?:i(?:'m| am) (?:about to|going to|planning to)|i (?:plan|intend) to)\s+(?:take|swallow|ingest|drink)\s+(?:(?:far )?too many|all (?:of )?(?:my|the)|a (?:whole )?bottle of)\s*(?:pills?|tablets?|capsules?|doses?|medication|medicine|bleach|poison|chemicals?)\b/i,
   /\b(?:my\s+(?:friend|mom|mother|dad|father|parent|partner|wife|husband|sister|brother|cousin|classmate|coworker)|he|she|they|someone)\s+(?:is|are)\s+(?:about to|going to|planning to)\s+jump (?:off|from) (?:the |a )?(?:bridge|roof|ledge)\b/i,
   /\b(?:my\s+(?:friend|mom|mother|dad|father|parent|partner|wife|husband|sister|brother|aunt|uncle|cousin|neighbor|classmate|coworker)|he|she|they|someone)\b.{0,80}\b(?:going to kill (?:himself|herself|themself|themselves)|plans? to take (?:his|her|their) own life|plans? to kill (?:himself|herself|themself|themselves)|will overdose|plans? to overdose)\b/i,
-  /\b(?:just |already |have )?(?:took|taken|swallowed|ingested)\s+(?:(?:far )?too many|all (?:of )?(?:my|the)|a (?:whole )?bottle of|\d+)\s*(?:pills?|tablets?|capsules?|doses?|medication|medicine)\b/i,
-  /\b(?:just |already |have )?(?:took|taken|swallowed|ingested)\s+(?:(?:ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty)|a handful of|(?:a|an|the) (?:entire|whole|full) bottle of)\s+(?:[a-z][a-z0-9'-]+\s+)?(?:pills?|tablets?|capsules?|doses?|medication|medicine)\b/i,
-  /\b(?:i )?(?:overdosed|have overdosed)\b/i,
-  /\b(?:took|taken|swallowed|ingested)\s+(?:way|far) too many\s+(?:[a-z][a-z0-9'-]+\s+){0,2}(?:pills?|tablets?|capsules?|doses?)\b/i,
-  /\b(?:just |already |have )?(?:took|taken|swallowed|ingested)\s+(?:far )?too many\s+(?:[a-z][a-z0-9'-]+\s+){0,2}(?:pills?|tablets?|capsules?|doses?)\b/i,
-  /\b(?:just |already |have )?(?:swallowed|ingested|drank)\s+(?:some |the )?(?:bleach|poison|antifreeze|cleaner|chemicals?)\b/i,
-  /\b(?:swallowed|ingested|drank)\s+(?:a |the )?(?:whole |full |entire )?bottle of\s+(?:bleach|poison|antifreeze|cleaner|chemicals?)\b/i,
-  /\b(?:swallowed|ingested|drank)\s+(?:half|most) (?:of )?(?:a |the )?bottle of\s+(?:bleach|poison|antifreeze|cleaner|chemicals?)\b/i,
-  /\b(?:injected|took|used)\s+(?:far )?too much\s+[a-z][a-z0-9'-]{1,50}\b/i,
-  /\b(?:took|injected|used)\s+all (?:of )?my\s+[a-z][a-z0-9'-]{1,50}\b/i,
-  /\bdrank\s+(?:a |the )?(?:whole|full) bottle of\s+(?:cough syrup|medicine|medication)\b/i,
   /\b(?:cut|stabbed|shot|burned) myself\b/i,
   /\b(?:cut|stabbed|shot|burned) (?:my|the) (?:wrist|arm|leg|chest|neck|body)\b/i,
   /\bslashed (?:my|the) (?:wrist|arm|leg|chest|neck|body)\b.{0,80}\b(?:bleeding|won't stop|will not stop)\b/i,
@@ -77,11 +68,32 @@ const strainedPatterns = [
   /\b(?:want to hurt my (?:coworker|classmate|friend|partner|boss|teacher)|feel like hurting (?:someone|a person|him|her|them))\b/i,
 ];
 
-const historicalSafePattern = /\b(?:i\s+used to|in the past\s+i|last year\s+i|years? ago\s+i)\b.{0,140}\b(?:want(?:ed)? to die|(?:was\s+)?suicid(?:e|al)|kill myself|hurt myself|harm myself)\b.{0,140}\b(?:not (?:now|anymore)|safe now|no longer)\b/i;
+const historicalSafePattern = /\b(?:i\s+used to|in the past\s+i|last year\s+i|years? ago\s+i)\b.{0,140}\b(?:want(?:ed)? to die|(?:did not|didn't) want to be alive|(?:was\s+)?suicid(?:e|al)|kill myself|hurt myself|harm myself)\b.{0,140}\b(?:not (?:now|anymore)|safe now|no longer)\b/i;
+
+function analyzedIngestionRisk(text: string) {
+  return analyzeIngestionRisk(realRiskText(text).text);
+}
+
+export function isCompletedAcuteIngestionDisclosure(text: string): boolean {
+  return analyzedIngestionRisk(text).completedFirstParty;
+}
+
+export function isThirdPartyCompletedAcuteIngestionDisclosure(text: string): boolean {
+  return analyzedIngestionRisk(text).completedThirdParty;
+}
+
+export function isThirdPartyHighRiskIngestionConcern(text: string): boolean {
+  const analysis = analyzedIngestionRisk(text);
+  return analysis.completedThirdParty || analysis.futureThirdParty;
+}
+
+export function isFutureHighRiskIngestionIntent(text: string): boolean {
+  return analyzedIngestionRisk(text).futureFirstParty;
+}
 
 function isInformationalOrIdiomaticClause(clause: string): boolean {
   const withoutLaughingIdiom = clause.replace(/\bkill(?:ing)? myself laughing\b/gi, "");
-  const personalCurrentRisk = /\b(?:i want to die|i want to kill myself|i(?:'m| am) suicidal|i plan to (?:die|kill|hurt|harm) myself|everyone would be better off without me|i wrote a suicide note)\b/i.test(withoutLaughingIdiom);
+  const personalCurrentRisk = /\b(?:i want to die|i (?:feel like )?(?:don't|do not|no longer) want to be alive|i want to kill myself|i(?:'m| am) suicidal|i plan to (?:die|kill|hurt|harm) myself|everyone would be better off without me|i wrote a suicide note)\b/i.test(withoutLaughingIdiom);
   if (personalCurrentRisk) return false;
   return /\b(?:school report|research paper|article|definition|what does)\b.{0,80}\b(?:suicide|suicidal|suicide prevention)\b/i.test(clause)
     || /\b(?:read|writing|wrote|studying)\b.{0,80}\b(?:article|report|paper)\b.{0,80}\b(?:suicide|suicidal|suicide prevention)\b/i.test(clause)
@@ -107,7 +119,7 @@ function isOrdinaryViolenceIdiomClause(clause: string): boolean {
 }
 
 function isFictionFramedClause(clause: string): boolean {
-  const explicitFirstPersonRisk = /\b(?:i want to|i plan to|i(?:'m| am) (?:about to|going to)|my suicide|my plan|myself|i (?:took|swallowed|drank|cut)|everyone would be better off without me|i wrote a suicide note)\b/i.test(clause);
+  const explicitFirstPersonRisk = /\b(?:i want to|i (?:feel like )?(?:don't|do not|no longer) want to be alive|i plan to|i(?:'m| am) (?:about to|going to)|my suicide|my plan|myself|i (?:took|swallowed|drank|cut)|everyone would be better off without me|i wrote a suicide note)\b/i.test(clause);
   if (explicitFirstPersonRisk) return false;
   return /\b(?:in|for|from)\s+(?:my|our|the|a|an)\s+(?:film|movie|script|novel|story|game|episode)\b/i.test(clause)
     || /\b(?:film|movie|script|novel|story|game|episode)\b.{0,80}\b(?:character|scene|plot|protagonist|hero|villain)\b/i.test(clause)
@@ -125,7 +137,7 @@ export function realRiskText(text: string): { text: string; hadHistoricalSafeDis
     if (isFictionFramedClause(clause) || isInformationalOrIdiomaticClause(clause) || isOrdinaryWeaponClause(clause) || isOrdinaryViolenceIdiomClause(clause)) return false;
     if (historicalSafePattern.test(clause)) {
       const safetyMarker = clause.search(/\b(?:not (?:now|anymore)|safe now|no longer)\b/i);
-      const laterCurrentRisk = safetyMarker >= 0 && /\b(?:i\s+want to die|i\s+want to (?:kill|hurt|harm) myself|i(?:'m| am) suicidal|i\s+plan to (?:kill|hurt|harm) myself)\b/i.test(clause.slice(safetyMarker));
+      const laterCurrentRisk = safetyMarker >= 0 && /\b(?:i\s+want to die|i\s+(?:feel like )?(?:don't|do not|no longer) want to be alive|i\s+want to (?:kill|hurt|harm) myself|i(?:'m| am) suicidal|i\s+plan to (?:kill|hurt|harm) myself)\b/i.test(clause.slice(safetyMarker));
       if (laterCurrentRisk) return true;
       hadHistoricalSafeDisclosure = true;
       return false;
@@ -137,6 +149,8 @@ export function realRiskText(text: string): { text: string; hadHistoricalSafeDis
 
 export function classifySafety(text: string): SafetyLevel {
   const riskText = realRiskText(text);
+  const ingestion = analyzedIngestionRisk(riskText.text);
+  if (ingestion.anyUrgent) return "urgent";
   const withoutNegatedViolence = riskText.text.replace(
     /\b(?:i(?:'m| am) not\s+(?:going to|planning to|about to)|i (?:do not|don't)\s+(?:intend|plan|want) to)\s+(?:kill|shoot|stab|attack|seriously hurt)\s+(?:him|her|them|someone|a person|my\s+(?:mom|mother|dad|father|parent|partner|wife|husband|friend|classmate|teacher|boss))\b/gi,
     "",
@@ -153,6 +167,7 @@ export function classifySafety(text: string): SafetyLevel {
     "",
   );
   if (urgentPatterns.some((pattern) => pattern.test(withoutSimpleNegations))) return "urgent";
+  if (ingestion.uncertainFirstParty || ingestion.uncertainThirdParty) return "strained";
   if (riskText.hadHistoricalSafeDisclosure) return "strained";
   const withoutStrainNegations = withoutSimpleNegations.replace(
     /\b(?:i(?:'m| am) not\s+(?:depressed|lonely|hopeless|worthless|angry|furious|overwhelmed|panicked)|i (?:do not|don't)\s+(?:feel\s+)?(?:depressed|lonely|hopeless|worthless|angry|furious|overwhelmed|panicked)|i (?:do not|don't) hate everyone)\b/gi,

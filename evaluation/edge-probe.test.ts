@@ -141,7 +141,12 @@ describe("independent medication ambiguity probe", () => {
   ])("does not acknowledge a potentially duplicated dose as routine adherence: %s", (text) => {
     const profile = { ...defaultProfile(), medications: [plan] };
     const reply = respond(text, profile);
-    expect(reply.text).toContain("won't guess");
+    if (reply.safetyContext === "acute-medical") {
+      expect(reply.safetyLevel).toBe("urgent");
+      expect(reply.text).toContain("Poison Help");
+    } else {
+      expect(reply.text).toContain("won't guess");
+    }
     expect(reply.text).not.toContain("marked today's");
     expect(applyAdherenceSignal([plan], text, new Date("2026-08-24T22:00:00.000Z"))).toEqual([plan]);
   });
