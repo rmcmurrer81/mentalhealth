@@ -42,13 +42,69 @@ describe("production voice lifecycle wiring", () => {
     expect(appSource).toContain("This complete reply is visible now and will be spoken when the voice is ready.");
     expect(appSource).toContain("releaseVoiceQueueWhenReady()");
     expect(appSource).toContain("failPendingVoiceQueue()");
+    expect(appSource).toContain("attempts >= 100");
+    expect(appSource).toContain("bounded 150-second readiness window");
   });
 
-  it("speaks the fresh onboarding question once local voice becomes ready", () => {
+  it("gates the personalized desktop welcome on actual selected-voice playback or explicit text-only choice", () => {
     expect(appSource).toContain("openingSpeechAttemptedRef");
     expect(appSource).toContain("current.turns.length === 1");
-    expect(appSource).toContain("!current.preferredName && current.speechEnabled");
+    expect(appSource).toContain("desktopFirstRunRef.current");
+    expect(appSource).toContain("onboardingIntroPendingRef.current = true");
+    expect(appSource).toContain('enterMainAfterOnboarding("spoken")');
+    expect(appSource).toContain("continueOnboardingWithTextOnly");
     expect(appSource).toContain("queueSpokenReply(opening.text)");
+    expect(appSource).toContain('className="onboarding-introduction-text"');
+    const onboardingAvatar = appSource.slice(
+      appSource.indexOf('<section className="onboarding-character"'),
+      appSource.indexOf('<section className="onboarding-card"'),
+    );
+    expect(onboardingAvatar).toContain("speaking={speaking}");
+    expect(onboardingAvatar).toContain("playbackMotion={speechMotion}");
+    expect(onboardingAvatar).not.toContain("speaking={false}");
+  });
+
+  it("starts a ready welcome immediately without an artificial renderer delay", () => {
+    const queue = appSource.slice(
+      appSource.indexOf("function queueSpokenReply"),
+      appSource.indexOf("function cancelSpokenReply"),
+    );
+    expect(queue).toContain("voiceOutputRef.current?.speak({");
+    expect(queue).not.toContain("setTimeout");
+    expect(appSource).not.toContain("speechStartTimerRef");
+  });
+
+  it("keeps every complete turn readable in both full and compact transcripts", () => {
+    expect(appSource).toContain("{profile.turns.map((turn, index, visibleTurns) => (");
+    expect(appSource).toContain("{profile.turns.map((turn, index) => <article");
+    expect(appSource).not.toContain("profile.turns.slice(-8)");
+    const styles = readFileSync(`${root}src/styles.css`, "utf8");
+    for (const selector of [".turn p", ".compact-turn p"]) {
+      const rule = styles.slice(styles.indexOf(selector), styles.indexOf("}", styles.indexOf(selector)) + 1);
+      expect(rule).toContain("max-height: none");
+      expect(rule).toContain("overflow: visible");
+      expect(rule).toContain("white-space: pre-wrap");
+    }
+  });
+
+  it("clears playback-driven mouth motion immediately on completion and mute", () => {
+    const finish = appSource.slice(
+      appSource.indexOf("function finishSpokenReply"),
+      appSource.indexOf("function queueSpokenReply"),
+    );
+    const cancel = appSource.slice(
+      appSource.indexOf("function cancelSpokenReply"),
+      appSource.indexOf("function setSpokenRepliesEnabled"),
+    );
+    expect(finish).toContain("setSpeechMotion(null)");
+    expect(cancel).toContain("setSpeechMotion(null)");
+    expect(cancel).toContain("scheduleHandsFreeListening()");
+    const queue = appSource.slice(
+      appSource.indexOf("function queueSpokenReply"),
+      appSource.indexOf("function cancelSpokenReply"),
+    );
+    expect(queue).toContain("if (!playback)");
+    expect(queue).toContain("no mouth motion was fabricated");
   });
 
   it("pauses recognition for an approved static preview and never routes it through dynamic speech", () => {

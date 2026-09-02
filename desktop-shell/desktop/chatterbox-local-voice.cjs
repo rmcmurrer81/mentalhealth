@@ -11,9 +11,15 @@ const PROVIDER_STATE_SCHEMA = 'wellbeing.local-voice.provider-state.v1';
 const PROVIDER_RESULT_SCHEMA = 'wellbeing.local-voice.provider-result.v1';
 const READY_SCHEMA = 'wellbeing.chatterbox.host-ready.v1';
 const READY_PREFIX = 'WELLBEING_VOICE_READY ';
+const PLAYBACK_SCHEMA = 'wellbeing.local-voice.playback-start.v1';
+const PLAYBACK_PREFIX = 'WELLBEING_VOICE_PLAYBACK ';
 const MAX_READY_BYTES = 4_096;
+const MAX_STDOUT_LINE_BYTES = 64 * 1024;
 const MAX_HTTP_RESPONSE_BYTES = 4_096;
-const STARTUP_TIMEOUT_MS = 45_000;
+// A cold, cache-only start measured just over 32 seconds on the owner-test
+// machine. Keep a truthful bounded window with enough headroom for a busy
+// low-memory computer instead of killing a healthy local host at 45 seconds.
+const STARTUP_TIMEOUT_MS = 90_000;
 const REQUEST_TIMEOUT_MS = 75_000;
 const PROFILES = Object.freeze(['soft-feminine', 'calm-masculine']);
 
@@ -57,6 +63,45 @@ function safeReadyMessage(line) {
       || value.profiles.length !== PROFILES.length
       || !PROFILES.every((profile) => value.profiles.includes(profile))) return null;
     return Object.freeze({ port: value.port });
+  } catch {
+    return null;
+  }
+}
+
+function safePlaybackMessage(line) {
+  if (typeof line !== 'string' || !line.startsWith(PLAYBACK_PREFIX) || Buffer.byteLength(line, 'utf8') > MAX_STDOUT_LINE_BYTES) return null;
+  try {
+    const value = JSON.parse(line.slice(PLAYBACK_PREFIX.length));
+    if (!value || Object.getPrototypeOf(value) !== Object.prototype
+      || Object.keys(value).sort().join(',') !== 'amplitudeFrames,durationMs,requestId,schema,timingBasis,visemeCues'
+      || value.schema !== PLAYBACK_SCHEMA || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(value.requestId)
+      || !Number.isInteger(value.durationMs) || value.durationMs < 100 || value.durationMs > 90_000
+      || value.timingBasis !== 'generated-waveform-amplitude-plus-text-class-heuristic'
+      || !Array.isArray(value.amplitudeFrames) || value.amplitudeFrames.length < 1 || value.amplitudeFrames.length > 1_000
+      || !Array.isArray(value.visemeCues) || value.visemeCues.length < 1 || value.visemeCues.length > 1_000) return null;
+    let priorAmplitude = -1;
+    for (const frame of value.amplitudeFrames) {
+      if (!frame || Object.getPrototypeOf(frame) !== Object.prototype || Object.keys(frame).sort().join(',') !== 'level,startMs'
+        || !Number.isInteger(frame.startMs) || frame.startMs <= priorAmplitude || frame.startMs >= value.durationMs
+        || typeof frame.level !== 'number' || !Number.isFinite(frame.level) || frame.level < 0 || frame.level > 1) return null;
+      priorAmplitude = frame.startMs;
+    }
+    let priorEnd = 0;
+    const visemes = new Set(['rest', 'jaw-open', 'wide', 'rounded', 'lip-contact']);
+    for (const cue of value.visemeCues) {
+      if (!cue || Object.getPrototypeOf(cue) !== Object.prototype || Object.keys(cue).sort().join(',') !== 'endMs,startMs,viseme'
+        || !Number.isInteger(cue.startMs) || !Number.isInteger(cue.endMs) || cue.startMs < priorEnd || cue.endMs <= cue.startMs
+        || cue.endMs > value.durationMs || !visemes.has(cue.viseme)) return null;
+      priorEnd = cue.endMs;
+    }
+    return Object.freeze({
+      schema: PLAYBACK_SCHEMA,
+      requestId: value.requestId,
+      durationMs: value.durationMs,
+      timingBasis: value.timingBasis,
+      amplitudeFrames: Object.freeze(value.amplitudeFrames.map((frame) => Object.freeze({ ...frame }))),
+      visemeCues: Object.freeze(value.visemeCues.map((cue) => Object.freeze({ ...cue }))),
+    });
   } catch {
     return null;
   }
@@ -114,6 +159,7 @@ function createChatterboxLocalVoiceProvider({
   runtimeRoot,
   platform = process.platform,
   spawnImpl = spawn,
+  postJsonImpl = postJson,
   startupTimeoutMs = STARTUP_TIMEOUT_MS,
 } = {}) {
   let lifecycleActive = true;
@@ -123,6 +169,7 @@ function createChatterboxLocalVoiceProvider({
   let stdoutBuffer = '';
   const authToken = crypto.randomBytes(32).toString('hex');
   const activeRequests = new Set();
+  const playbackListeners = new Set();
 
   function stopHost() {
     if (startupTimer) clearTimeout(startupTimer);
@@ -174,16 +221,25 @@ function createChatterboxLocalVoiceProvider({
       if (!ready) stopHost();
     }, startupTimeoutMs);
     child.stdout?.on('data', (chunk) => {
-      if (!lifecycleActive || ready) return;
-      stdoutBuffer = `${stdoutBuffer}${chunk.toString('utf8')}`.slice(-MAX_READY_BYTES);
-      for (const line of stdoutBuffer.split(/\r?\n/u)) {
-        const parsed = safeReadyMessage(line.trim());
-        if (!parsed) continue;
-        ready = parsed;
-        if (startupTimer) clearTimeout(startupTimer);
-        startupTimer = null;
-        stdoutBuffer = '';
-        break;
+      if (!lifecycleActive) return;
+      stdoutBuffer = `${stdoutBuffer}${chunk.toString('utf8')}`;
+      if (Buffer.byteLength(stdoutBuffer, 'utf8') > MAX_STDOUT_LINE_BYTES * 2) stdoutBuffer = '';
+      const lines = stdoutBuffer.split(/\r?\n/u);
+      stdoutBuffer = lines.pop() ?? '';
+      for (const rawLine of lines) {
+        const line = rawLine.trim();
+        const parsedReady = safeReadyMessage(line);
+        if (parsedReady) {
+          ready = parsedReady;
+          if (startupTimer) clearTimeout(startupTimer);
+          startupTimer = null;
+          continue;
+        }
+        const playback = safePlaybackMessage(line);
+        if (!playback || !activeRequests.has(playback.requestId)) continue;
+        for (const listener of playbackListeners) {
+          try { listener(playback); } catch { /* isolate renderer notification listeners */ }
+        }
       }
     });
     child.on('error', failHost);
@@ -206,7 +262,7 @@ function createChatterboxLocalVoiceProvider({
       }
       activeRequests.add(request.requestId);
       try {
-        const response = await postJson({
+        const response = await postJsonImpl({
           port: ready.port,
           authToken,
           route: '/speak',
@@ -232,13 +288,20 @@ function createChatterboxLocalVoiceProvider({
 
     cancel(requestId) {
       if (!ready || !activeRequests.has(requestId)) return;
-      void postJson({ port: ready.port, authToken, route: '/cancel', value: { requestId }, timeoutMs: 2_000 });
+      return postJsonImpl({ port: ready.port, authToken, route: '/cancel', value: { requestId }, timeoutMs: 2_000 });
+    },
+
+    onPlaybackStart(listener) {
+      if (typeof listener !== 'function') throw new TypeError('Playback listener must be a function.');
+      playbackListeners.add(listener);
+      return () => playbackListeners.delete(listener);
     },
 
     dispose() {
       if (!lifecycleActive) return;
       lifecycleActive = false;
       activeRequests.clear();
+      playbackListeners.clear();
       stopHost();
     },
   });
@@ -248,9 +311,12 @@ module.exports = {
   PROVIDER_ID,
   READY_PREFIX,
   READY_SCHEMA,
+  PLAYBACK_PREFIX,
+  PLAYBACK_SCHEMA,
   createChatterboxLocalVoiceProvider,
   postJson,
   providerResult,
   providerState,
   safeReadyMessage,
+  safePlaybackMessage,
 };

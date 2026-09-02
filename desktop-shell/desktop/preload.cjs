@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('wellbeingDesktop', Object.freeze({
   requestHandsFreePermission: () => ipcRenderer.invoke('wellbeing:request-hands-free'),
   armMicrophone: () => ipcRenderer.invoke('wellbeing:arm-microphone'),
   disarmMicrophone: () => ipcRenderer.send('wellbeing:disarm-microphone'),
+  localSpeech: Object.freeze({
+    status: () => ipcRenderer.invoke('wellbeing:local-speech-status'),
+    transcribe: (request) => ipcRenderer.invoke('wellbeing:local-speech-transcribe', request),
+  }),
   setWindowMode: (mode) => ipcRenderer.invoke('wellbeing:set-window-mode', mode),
   onWindowModeChanged: (listener) => {
     const handler = (_event, mode) => {
@@ -20,6 +24,11 @@ contextBridge.exposeInMainWorld('wellbeingDesktop', Object.freeze({
     status: () => ipcRenderer.invoke('wellbeing:local-voice-status'),
     speak: (request) => ipcRenderer.invoke('wellbeing:local-voice-speak', request),
     cancel: (requestId) => ipcRenderer.invoke('wellbeing:local-voice-cancel', requestId),
+    onPlaybackStart: (listener) => {
+      const handler = (_event, value) => listener(value);
+      ipcRenderer.on('wellbeing:local-voice-playback-start', handler);
+      return () => ipcRenderer.removeListener('wellbeing:local-voice-playback-start', handler);
+    },
   }),
   localModel: Object.freeze({
     status: () => ipcRenderer.invoke('wellbeing:local-model-status'),

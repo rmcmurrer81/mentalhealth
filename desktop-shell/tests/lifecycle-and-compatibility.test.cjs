@@ -18,7 +18,7 @@ test('close and quit choices keep preserve-first lifecycle explicit', () => {
   assert.equal(quitDialogResponseIsConfirmed(0), true);
   assert.equal(quitDialogResponseIsConfirmed(1), false);
   assert.deepEqual(resolveWindowPresentation(true), {
-    window: { show: true, opacity: 0, skipTaskbar: true, focusable: false },
+    window: { show: false, opacity: 1, skipTaskbar: true, focusable: false },
     webPreferences: { backgroundThrottling: false },
   });
   assert.deepEqual(resolveWindowPresentation(false), {

@@ -46,6 +46,12 @@ const {
   createChatterboxLocalVoiceProvider,
 } = require('./chatterbox-local-voice.cjs');
 const {
+  ALLOWED_TYPES: LOCAL_SPEECH_TYPES,
+  MAX_AUDIO_BYTES: LOCAL_SPEECH_MAX_AUDIO_BYTES,
+  RESULT_SCHEMA: LOCAL_SPEECH_RESULT_SCHEMA,
+  createLocalSpeechProvider,
+} = require('./local-speech.cjs');
+const {
   BUNDLED_TARGET_URL,
   HEALTH_PATH,
   startBundledRuntime,
@@ -68,7 +74,10 @@ const MICROPHONE_ARM_MS = 20_000;
 const smokeMode = process.argv.includes('--smoke-test');
 const visualPreviewDirectory = findArgument('--visual-preview-dir');
 const visualPreviewMode = Boolean(visualPreviewDirectory);
-const initialWindowMode = smokeMode || visualPreviewMode ? WINDOW_MODE.FULL : WINDOW_MODE.COMPACT;
+const onboardingVoiceProbeResult = findArgument('--onboarding-voice-probe-result');
+const onboardingVoiceProbeSetupHash = findArgument('--onboarding-voice-probe-setup-sha256');
+const onboardingVoiceProbeMode = Boolean(onboardingVoiceProbeResult);
+const initialWindowMode = smokeMode || visualPreviewMode || onboardingVoiceProbeMode ? WINDOW_MODE.FULL : WINDOW_MODE.COMPACT;
 const gpuSandboxCompatibility = resolveGpuSandboxCompatibility({
   platform: process.platform,
   release: os.release(),
@@ -98,11 +107,15 @@ let initialNavigationEvidence;
 let sessionPolicyEvidence;
 let localModelBridge;
 let localVoiceBridge;
+let localVoicePlaybackUnsubscribe;
+let localSpeechProvider;
 let brandIconEvidence;
 let smokeHandsFreePermissionRequests = 0;
 let runtimeWarmupEvidence;
 let currentWindowMode = initialWindowMode;
 let lastFullBounds = { width: 1440, height: 940 };
+let onboardingVoiceProbePlaybackEvent = null;
+let onboardingVoiceProbeIpcTrustEvidence = null;
 
 app.setName(APP_NAME);
 if (process.platform === 'win32') app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -115,11 +128,15 @@ if (smokeMode) {
   if (!smokeUserData) throw new Error('COMPANION_SMOKE_USER_DATA is required in smoke mode.');
   fs.mkdirSync(path.resolve(smokeUserData), { recursive: true });
   app.setPath('userData', path.resolve(smokeUserData));
-} else if (visualPreviewMode) {
-  const previewRoot = path.resolve(visualPreviewDirectory);
+} else if (visualPreviewMode || onboardingVoiceProbeMode) {
+  const previewRoot = path.resolve(visualPreviewMode ? visualPreviewDirectory : path.dirname(onboardingVoiceProbeResult));
   fs.mkdirSync(previewRoot, { recursive: true });
   const previewUserDataTag = crypto.createHash('sha256').update(previewRoot).digest('hex').slice(0, 12);
-  const previewUserData = path.join(os.tmpdir(), 'WellbeingCompanionVisualPreview', previewUserDataTag);
+  const previewUserData = path.join(
+    os.tmpdir(),
+    visualPreviewMode ? 'WellbeingCompanionVisualPreview' : 'WellbeingCompanionOnboardingVoiceProbe',
+    previewUserDataTag,
+  );
   fs.mkdirSync(previewUserData, { recursive: true });
   app.setPath('userData', previewUserData);
 } else {
@@ -132,7 +149,7 @@ function findArgument(prefix) {
 }
 
 function createOwnerMarker() {
-  if (smokeMode || visualPreviewMode) return;
+  if (smokeMode || visualPreviewMode || onboardingVoiceProbeMode) return;
   const dataRoot = path.dirname(app.getPath('userData'));
   fs.mkdirSync(dataRoot, { recursive: true });
   const marker = path.join(dataRoot, '.wellbeing-companion-owner.json');
@@ -279,12 +296,28 @@ function isTrustedRenderer(sender) {
 
 function isTrustedRendererEvent(event) {
   try {
-    return Boolean(mainWindow && !mainWindow.isDestroyed() && isTrustedIpcEvent({
+    const expectedWebContents = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    const lifecycleActive = Boolean(mainWindow && !mainWindow.isDestroyed()
+      && !quitApproved && !sessionEnding && mainWindow.isVisible());
+    const trusted = Boolean(expectedWebContents && isTrustedIpcEvent({
       event,
-      expectedWebContents: mainWindow.webContents,
+      expectedWebContents,
       targetUrl: BUNDLED_TARGET_URL,
-      lifecycleActive: !quitApproved && !sessionEnding && mainWindow.isVisible(),
+      lifecycleActive,
     }));
+    if (onboardingVoiceProbeMode) {
+      onboardingVoiceProbeIpcTrustEvidence = {
+        lifecycleActive,
+        windowVisible: Boolean(mainWindow?.isVisible()),
+        senderMatches: event?.sender === expectedWebContents,
+        senderFramePresent: Boolean(event?.senderFrame),
+        senderFrameMatches: event?.senderFrame === expectedWebContents?.mainFrame,
+        rendererOriginMatches: Boolean(expectedWebContents && isSameAppOrigin(expectedWebContents.getURL(), BUNDLED_TARGET_URL)),
+        frameOriginMatches: Boolean(event?.senderFrame && isSameAppOrigin(event.senderFrame.url, BUNDLED_TARGET_URL)),
+        trusted,
+      };
+    }
+    return trusted;
   } catch {
     return false;
   }
@@ -367,6 +400,35 @@ function registerIpc() {
   ipcMain.on('wellbeing:disarm-microphone', (event) => {
     if (isTrustedRenderer(event.sender)) disarmMicrophone();
   });
+  ipcMain.handle('wellbeing:local-speech-status', async (event) => {
+    if (!isTrustedRendererEvent(event) || !localSpeechProvider) {
+      return { ready: false, localOnly: true, cacheOnly: true, rawAudioPersisted: false };
+    }
+    return localSpeechProvider.status();
+  });
+  ipcMain.handle('wellbeing:local-speech-transcribe', async (event, request) => {
+    const unavailable = (requestId = 'invalid') => ({
+      schema: LOCAL_SPEECH_RESULT_SCHEMA,
+      requestId,
+      status: 'unavailable',
+      text: '',
+      language: 'en',
+      rawAudioPersisted: false,
+    });
+    if (!isTrustedRendererEvent(event) || !localSpeechProvider || !request || Object.getPrototypeOf(request) !== Object.prototype) return unavailable();
+    if (Object.keys(request).sort().join(',') !== 'audio,mimeType,requestId'
+      || typeof request.requestId !== 'string'
+      || typeof request.mimeType !== 'string'
+      || !LOCAL_SPEECH_TYPES.includes(request.mimeType)) return unavailable(typeof request.requestId === 'string' ? request.requestId : 'invalid');
+    const input = request.audio;
+    const audio = input instanceof ArrayBuffer
+      ? Buffer.from(input)
+      : ArrayBuffer.isView(input)
+        ? Buffer.from(input.buffer, input.byteOffset, input.byteLength)
+        : null;
+    if (!audio || audio.length < 1 || audio.length > LOCAL_SPEECH_MAX_AUDIO_BYTES) return unavailable(request.requestId);
+    return localSpeechProvider.transcribe({ requestId: request.requestId, mimeType: request.mimeType, audio });
+  });
   ipcMain.handle('wellbeing:set-window-mode', (event, mode) => {
     if (!isTrustedRenderer(event.sender)) return { mode: WINDOW_MODE.FULL, alwaysOnTop: false, rejected: true };
     return setNativeWindowMode(mode);
@@ -427,7 +489,7 @@ function createMenus() {
         { label: 'Character-only corner mode', click: () => setNativeWindowMode(WINDOW_MODE.CHARACTER) },
         { label: 'Restore full companion', click: () => setNativeWindowMode(WINDOW_MODE.FULL) },
         { type: 'separator' },
-        { label: 'Reload local app', accelerator: 'Ctrl+R', click: () => mainWindow?.loadURL(BUNDLED_TARGET_URL) },
+        { label: 'Reload local app', accelerator: 'Ctrl+R', click: () => mainWindow?.reload() },
         { type: 'separator' },
         { label: 'Quit companion…', accelerator: 'Ctrl+Q', click: confirmRealExit },
       ],
@@ -496,27 +558,28 @@ async function writeSmokeResultAndExit() {
          localStorage.setItem(key, 'round-trip-ok');
          const value = localStorage.getItem(key);
          localStorage.removeItem(key);
-         const canvas = document.querySelector('canvas.mascot-canvas');
-         if (canvas) {
+         const orb = document.querySelector('.reactive-companion-orb');
+         if (orb) {
            const deadline = performance.now() + 1_400;
            await new Promise((resolve) => {
              const inspect = () => {
-               const tick = Number.parseInt(canvas.dataset.motionTick ?? '0', 10);
+               const tick = Number.parseInt(orb.dataset.motionTick ?? '0', 10);
                if (tick >= 15 || performance.now() >= deadline) resolve();
-               else requestAnimationFrame(inspect);
+                else setTimeout(inspect, 25);
              };
              inspect();
            });
          }
-         const renderer = canvas?.dataset.renderer ?? null;
-         const motionTick = Number.parseInt(canvas?.dataset.motionTick ?? '0', 10);
-         const motionState = canvas?.dataset.motionState ?? null;
-         const waving = typeof motionState === 'string' && motionState.split(':')[2] === 'true';
+         const renderer = orb?.dataset.renderer ?? null;
+         const motionTick = Number.parseInt(orb?.dataset.motionTick ?? '0', 10);
+         const spriteElements = Array.from(document.querySelectorAll('img,canvas,[data-sprite-sheet],[data-frame-grid]'))
+           .filter((element) => element.matches('canvas.mascot-canvas,[data-sprite-sheet],[data-frame-grid]')
+             || element.getAttribute('src')?.includes('companion-warm-plum-speech-sprite'));
          const waitForCondition = async (predicate, timeoutMs) => {
            const deadline = performance.now() + timeoutMs;
            while (performance.now() < deadline) {
              if (predicate()) return true;
-             await new Promise((resolve) => requestAnimationFrame(resolve));
+              await new Promise((resolve) => setTimeout(resolve, 25));
            }
            return Boolean(predicate());
          };
@@ -541,7 +604,7 @@ async function writeSmokeResultAndExit() {
          if (textarea && valueSetter) {
            valueSetter.call(textarea, typedPrompt);
            textarea.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: typedPrompt }));
-           await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+           await new Promise((resolve) => setTimeout(resolve, 50));
            if (typeof composer?.requestSubmit === 'function') composer.requestSubmit();
            else composer?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
          }
@@ -579,17 +642,27 @@ async function writeSmokeResultAndExit() {
           documentTitle: document.title,
           workingTitlePresent: document.body.innerText.includes('WORKING TITLE'),
            localStorageRoundTrip: value,
-           companion3d: {
-             canvasPresent: Boolean(canvas),
+           companionVisual: {
+             orbPresent: Boolean(orb),
              renderer,
-             model: canvas?.dataset.model ?? null,
-             depthTest: canvas?.dataset.depthTest ?? null,
-             hierarchy: canvas?.dataset.hierarchy ?? null,
-             rendererLifecycle: canvas?.dataset.rendererLifecycle ?? null,
+             presentation: orb?.dataset.presentation ?? null,
+             visualKind: orb?.dataset.visualKind ?? null,
+             imageSwapPath: orb?.dataset.imageSwapPath ?? null,
+             spriteFrameSwap: orb?.dataset.spriteFrameSwap ?? null,
+             speechTiming: orb?.dataset.speechTiming ?? null,
+             motionMode: orb?.dataset.motionMode ?? null,
+             voiceReactiveCore: orb?.dataset.voiceReactiveCore ?? null,
+             stableCenter: orb?.dataset.stableCenter ?? null,
+             playbackTimed: orb?.dataset.playbackTimed ?? null,
+             rawAudioAccess: orb?.dataset.rawAudioAccess ?? null,
+             true3dAcceptance: orb?.dataset.true3dAcceptance ?? null,
+             webglScene: orb?.dataset.webglScene ?? null,
+             liveMeshCount: Number.parseInt(orb?.dataset.liveMeshCount ?? '-1', 10),
+             meshRenderCalls: Number.parseInt(orb?.dataset.meshRenderCalls ?? '-1', 10),
+             accessibleStatus: document.querySelector('.companion-orb-status[role="status"]')?.textContent?.trim() ?? null,
+             oldSpritePathMounted: spriteElements.length > 0,
              motionTick,
-             motionState,
-             waving,
-             movementObserved: renderer === 'webgl-3d-motion' && motionTick >= 15 && waving
+             runtimeObserved: renderer === 'reactive-css-orb-2d' && motionTick >= 15 && orb?.dataset.stableCenter === 'true'
            },
            handsFreeTextRecovery: {
              bounded: true,
@@ -611,7 +684,7 @@ async function writeSmokeResultAndExit() {
            }
          };
       })()`),
-      new Promise((resolve) => setTimeout(() => resolve({ probeTimedOut: true }), 8_000)),
+      new Promise((resolve) => setTimeout(() => resolve({ probeTimedOut: true }), 20_000)),
     ]);
   } catch (error) {
     rendererProbe = { probeError: error instanceof Error ? error.message : String(error) };
@@ -747,39 +820,77 @@ async function runVisualPreviewCapture() {
     await waitForPreview(180);
   };
 
+  const onboardingPresent = await evaluate(`Boolean(document.querySelector('.onboarding-shell'))`);
+  if (onboardingPresent) {
+    await capture('00a-onboarding-name.png', 'First-run preferred-name page before the main conversation');
+    const nameAccepted = await evaluate(`(() => {
+      const input = document.querySelector('.onboarding-name input');
+      const setter = input ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set : null;
+      if (!input || !setter) return false;
+      setter.call(input, 'Visual QA Friend');
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Visual QA Friend' }));
+      return true;
+    })()`);
+    if (!nameAccepted) throw new Error('Onboarding visual preview could not enter its fixed fictional name.');
+    await waitForPreview(120);
+    await evaluate(`Array.from(document.querySelectorAll('.onboarding-card button')).find((button) => button.textContent?.trim() === 'Continue')?.click()`);
+    await waitForPreview(250);
+    await evaluate(`(() => {
+      const spoken = document.querySelector('.onboarding-toggle input[type="checkbox"]');
+      if (spoken?.checked) spoken.click();
+    })()`);
+    await capture('00b-onboarding-voice.png', 'First-run soft-female/warm-male voice choice with explicit text-only selection');
+    await evaluate(`Array.from(document.querySelectorAll('.onboarding-card button')).find((button) => button.textContent?.trim() === 'Continue')?.click()`);
+    await waitForPreview(250);
+    await capture('00c-onboarding-theme.png', 'First-run light/default-medium/dark theme choice');
+    await evaluate(`Array.from(document.querySelectorAll('.onboarding-card button')).find((button) => button.textContent?.trim() === 'Continue')?.click()`);
+    await waitForPreview(250);
+    await capture('00d-onboarding-microphone.png', 'First-run truthful microphone explanation and default not-now choice');
+    await evaluate(`Array.from(document.querySelectorAll('.onboarding-card button')).find((button) => button.textContent?.trim() === 'Finish setup')?.click()`);
+    const mainReady = await evaluate(`(async () => {
+      const deadline = performance.now() + 2200;
+      while (!document.querySelector('.app-shell') && performance.now() < deadline) {
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return Boolean(document.querySelector('.app-shell'));
+    })()`);
+    if (!mainReady) throw new Error('Text-only visual onboarding did not enter the main conversation.');
+    await waitForPreview(300);
+  }
+
   await evaluate(`(async () => {
     await document.fonts.ready;
-    const canvas = document.querySelector('canvas.mascot-canvas');
+    const orb = document.querySelector('.reactive-companion-orb');
     const deadline = performance.now() + 2200;
-    while (canvas && Number.parseInt(canvas.dataset.motionTick ?? '0', 10) < 24 && performance.now() < deadline) {
+    while (orb && Number.parseInt(orb.dataset.motionTick ?? '0', 10) < 24 && performance.now() < deadline) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     return {
-      renderer: canvas?.dataset.renderer ?? null,
-      visualProfile: canvas?.dataset.visualProfile ?? null,
-      stage: document.querySelector('.presence-character-stage')?.getBoundingClientRect().toJSON() ?? null,
+      renderer: orb?.dataset.renderer ?? null,
+      presentation: orb?.dataset.presentation ?? null,
+      stage: document.querySelector('.companion-orb-stage')?.getBoundingClientRect().toJSON() ?? null,
     };
   })()`);
   await setPreviewTheme('Dark', 'dark');
-  await capture('01-full-home-dark.png', 'Full home in bold dark mode with dominant real 3D companion');
+  await capture('01-full-home-dark.png', 'Full home in bold dark mode with the honest temporary animated orb');
 
   await setPreviewTheme('Light', 'light');
-  await capture('02-full-home-light.png', 'Full home in bold light mode with dominant real 3D companion');
+  await capture('02-full-home-light.png', 'Full home in bold light mode with the honest temporary animated orb');
 
   await setPreviewTheme('Dark', 'dark');
 
   await evaluate(`document.querySelector('button[aria-label="Open compact work beside me mode"]')?.click()`);
   await waitForPreview(650);
   await evaluate(`document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
-  await capture('03-compact-character-chat.png', 'Compact work-beside-me mode: character and small chat only');
+  await capture('03-compact-orb-chat.png', 'Compact work-beside-me mode: stable orb and small chat');
 
   await evaluate(`document.querySelector('.compact-toolbar button[aria-label="Show quick settings"]')?.focus()`);
   await capture('04-compact-controls-revealed.png', 'Compact mode with unobtrusive controls intentionally revealed');
 
-  await evaluate(`document.querySelector('button[aria-label="Use character-only corner mode"]')?.click()`);
+  await evaluate(`document.querySelector('button[aria-label="Use orb-only corner mode"]')?.click()`);
   await waitForPreview(650);
   await evaluate(`document.activeElement instanceof HTMLElement && document.activeElement.blur()`);
-  await capture('05-character-only.png', 'Smallest character-only corner mode');
+  await capture('05-orb-only.png', 'Smallest honest orb-only corner mode');
 
   setNativeWindowMode(WINDOW_MODE.FULL);
   await waitForPreview(650);
@@ -842,7 +953,8 @@ async function runVisualPreviewCapture() {
     schema: 1,
     status: 'owner-visual-review-required',
     packagePromoted: false,
-    sourceVersion: '0.2.12-owner-test-candidate',
+    sourceVersion: `${app.getVersion()}-owner-test-candidate`,
+    onboardingCaptured: onboardingPresent,
     generatedAt: new Date().toISOString(),
     isolatedUserData: 'temporary isolated preview profile (not included)',
     captures,
@@ -872,6 +984,248 @@ async function writeVisualPreviewFailureAndExit(error) {
   app.exit(1);
 }
 
+async function runOnboardingVoiceProbe() {
+  const resultPath = path.resolve(onboardingVoiceProbeResult);
+  if (!/^[A-F0-9]{64}$/i.test(onboardingVoiceProbeSetupHash || '')) {
+    throw new Error('The onboarding voice probe requires the exact setup ZIP SHA-256.');
+  }
+  if (fs.existsSync(resultPath)) throw new Error('The onboarding voice probe result path already exists.');
+
+  const renderer = await mainWindow.webContents.executeJavaScript(`(async () => {
+    const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+    const startedAt = performance.now();
+    const deadline = startedAt + 170000;
+    while (!document.querySelector('.onboarding-shell') && performance.now() < deadline) await wait(25);
+    const onboardingPresent = Boolean(document.querySelector('.onboarding-shell'));
+    if (!onboardingPresent) return { onboardingPresent: false };
+
+    const input = document.querySelector('.onboarding-name input');
+    const setter = input ? Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set : null;
+    if (!input || !setter) return { onboardingPresent: true, inputAccepted: false };
+    setter.call(input, 'Voice Probe Friend');
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: 'Voice Probe Friend' }));
+    await wait(40);
+    const clickButton = (label) => Array.from(document.querySelectorAll('.onboarding-card button'))
+      .find((button) => button.textContent?.trim() === label)?.click();
+    clickButton('Continue');
+    await wait(80);
+    const spoken = document.querySelector('.onboarding-toggle input[type="checkbox"]');
+    if (spoken && !spoken.checked) spoken.click();
+    const selectedVoice = document.querySelector('input[name="onboarding-voice"]:checked')?.closest('label')?.textContent?.trim() ?? null;
+    const speechEnabledBeforeFinish = Boolean(spoken?.checked);
+    clickButton('Continue');
+    await wait(80);
+    clickButton('Continue');
+    await wait(80);
+    const microphoneNotNow = document.querySelector('input[name="onboarding-microphone"]:checked')?.closest('label')?.textContent?.includes('Not now') ?? false;
+
+    let orbObserved = false;
+    let playbackTimedObserved = false;
+    let audioEnergyObserved = false;
+    let speakingObserved = false;
+    let stableCenterObserved = false;
+    let motionTickObserved = false;
+    let oldSpritePathMounted = false;
+    let welcomePlayingObserved = false;
+    let nextVoiceStatusSampleAt = 0;
+    const voiceStatusTimeline = [];
+    clickButton('Finish setup');
+    while (!document.querySelector('.app-shell') && performance.now() < deadline) {
+      const orb = document.querySelector('.reactive-companion-orb');
+      orbObserved ||= Boolean(orb);
+      playbackTimedObserved ||= orb?.dataset.playbackTimed === 'true';
+      audioEnergyObserved ||= Number.parseFloat(orb?.dataset.audioEnergy ?? '0') > 0.001;
+      speakingObserved ||= Boolean(document.querySelector('.companion-orb-stage.state-speaking'));
+      stableCenterObserved ||= orb?.dataset.stableCenter === 'true';
+      motionTickObserved ||= Number.parseInt(orb?.dataset.motionTick ?? '0', 10) >= 15;
+      oldSpritePathMounted ||= Boolean(document.querySelector('canvas.mascot-canvas,[data-sprite-sheet],[data-frame-grid],img[src*="companion-warm-plum-speech-sprite"]'));
+      welcomePlayingObserved ||= document.querySelector('.warmup-status strong')?.textContent?.trim() === 'Welcome playing';
+      if (performance.now() >= nextVoiceStatusSampleAt) {
+        nextVoiceStatusSampleAt = performance.now() + 1000;
+        const status = await window.wellbeingDesktop?.localVoice?.status().catch(() => null);
+        if (status && voiceStatusTimeline.length < 180) {
+          voiceStatusTimeline.push({
+            elapsedMs: Math.round(performance.now() - startedAt),
+            ready: status.ready === true,
+            unavailableCode: status.ready ? null : status.unavailableCode ?? 'unknown',
+          });
+        }
+      }
+      await wait(16);
+    }
+
+    const mainReady = Boolean(document.querySelector('.app-shell'));
+    const fullTurn = document.querySelector('.turn.companion:last-of-type p');
+    const fullTurnStyle = fullTurn ? getComputedStyle(fullTurn) : null;
+    const expectedText = "Hi, Voice Probe Friend. I’m Companion, your local synthetic companion. I’m ready to listen, remember only what you choose to keep, and stay honest that I’m not a human person. It’s good to meet you.";
+    const fullTurnText = fullTurn?.textContent ?? null;
+    const fullTurnComplete = fullTurnText === expectedText;
+    const fullTurnUnclipped = Boolean(fullTurn && fullTurn.scrollHeight <= fullTurn.clientHeight + 1
+      && fullTurnStyle?.maxHeight === 'none' && fullTurnStyle?.overflow === 'visible');
+    const fullTurnFontPx = fullTurnStyle ? Number.parseFloat(fullTurnStyle.fontSize) : 0;
+
+    document.querySelector('button[aria-label="Open compact work beside me mode"]')?.click();
+    await wait(800);
+    const compactTurn = document.querySelector('.compact-turn.companion:last-of-type p');
+    const compactTurnStyle = compactTurn ? getComputedStyle(compactTurn) : null;
+    const compactTurnComplete = compactTurn?.textContent === expectedText;
+    const compactTurnUnclipped = Boolean(compactTurn && compactTurn.scrollHeight <= compactTurn.clientHeight + 1
+      && compactTurnStyle?.maxHeight === 'none' && compactTurnStyle?.overflow === 'visible');
+    const compactTurnFontPx = compactTurnStyle ? Number.parseFloat(compactTurnStyle.fontSize) : 0;
+    const compactTranscript = document.querySelector('.compact-turns');
+    if (compactTranscript) compactTranscript.scrollTop = compactTranscript.scrollHeight;
+    const compactTranscriptCanReachEnd = Boolean(compactTranscript
+      && Math.abs((compactTranscript.scrollHeight - compactTranscript.clientHeight) - compactTranscript.scrollTop) <= 2);
+
+    return {
+      onboardingPresent,
+      inputAccepted: true,
+      selectedVoice,
+      speechEnabledBeforeFinish,
+      microphoneNotNow,
+      mainReady,
+      orbObserved,
+      playbackTimedObserved,
+      audioEnergyObserved,
+      speakingObserved,
+      stableCenterObserved,
+      motionTickObserved,
+      oldSpritePathMounted,
+      welcomePlayingObserved,
+      voiceStatusTimeline,
+      warmupFailureVisible: Boolean(document.querySelector('.onboarding-problem'))
+        || document.querySelector('.warmup-status strong')?.textContent?.trim() === 'Voice unavailable',
+      fullTurnComplete,
+      fullTurnUnclipped,
+      fullTurnFontPx,
+      compactTurnComplete,
+      compactTurnUnclipped,
+      compactTurnFontPx,
+      compactTranscriptCanReachEnd,
+      renderer: document.querySelector('.reactive-companion-orb')?.dataset.renderer ?? null,
+      presentation: document.querySelector('.reactive-companion-orb')?.dataset.presentation ?? null,
+      imageSwapPath: document.querySelector('.reactive-companion-orb')?.dataset.imageSwapPath ?? null,
+      spriteFrameSwap: document.querySelector('.reactive-companion-orb')?.dataset.spriteFrameSwap ?? null,
+      true3dAcceptance: document.querySelector('.reactive-companion-orb')?.dataset.true3dAcceptance ?? null,
+    };
+  })()`, true);
+
+  const playback = onboardingVoiceProbePlaybackEvent;
+  const receipt = {
+    schema: 'wellbeing.onboarding-voice-integration-probe.v1',
+    status: 'PASS',
+    packageVersion: app.getVersion(),
+    setupZipSha256: onboardingVoiceProbeSetupHash.toUpperCase(),
+    testedAtUtc: new Date().toISOString(),
+    execution: {
+      exactPackagedApplication: true,
+      installerExecuted: false,
+      isolatedFirstRunProfile: true,
+      fixedSyntheticNameOnly: true,
+      personalProfileRead: false,
+      microphoneOpened: false,
+    },
+    onboarding: renderer,
+    playback: playback ? {
+      actualPlaybackEventObserved: true,
+      timingBasis: playback.timingBasis,
+      durationMs: playback.durationMs,
+      amplitudeFrameCount: playback.amplitudeFrames.length,
+      visemeCueCount: playback.visemeCues.length,
+    } : { actualPlaybackEventObserved: false },
+    microphoneBoundary: {
+      onboardingChoice: renderer.microphoneNotNow ? 'not-now' : 'unexpected',
+      handsFreePermissionRequests: smokeHandsFreePermissionRequests,
+      approvedForSession: microphoneApprovedForSession,
+      armedAtCompletion: microphoneArmedUntil > Date.now(),
+      osPermissionBypassAttempted: false,
+    },
+    ipcTrustBoundary: onboardingVoiceProbeIpcTrustEvidence,
+    truthBoundary: {
+      renderer: renderer.renderer,
+      presentationType: 'honest-temporary-animated-orb',
+      natural3dMotionClaimed: false,
+      true3dAcceptance: renderer.true3dAcceptance,
+      oldSpritePathMounted: renderer.oldSpritePathMounted,
+      playbackTimedEnergyObserved: renderer.audioEnergyObserved,
+    },
+  };
+  const required = [
+    renderer.onboardingPresent,
+    renderer.inputAccepted,
+    renderer.speechEnabledBeforeFinish,
+    renderer.microphoneNotNow,
+    renderer.mainReady,
+    renderer.orbObserved,
+    renderer.playbackTimedObserved,
+    renderer.audioEnergyObserved,
+    renderer.speakingObserved,
+    renderer.stableCenterObserved,
+    renderer.motionTickObserved,
+    !renderer.oldSpritePathMounted,
+    renderer.welcomePlayingObserved,
+    renderer.fullTurnComplete,
+    renderer.fullTurnUnclipped,
+    renderer.fullTurnFontPx >= 14,
+    renderer.compactTurnComplete,
+    renderer.compactTurnUnclipped,
+    renderer.compactTurnFontPx >= 14,
+    renderer.compactTranscriptCanReachEnd,
+    renderer.renderer === 'reactive-css-orb-2d',
+    renderer.presentation === 'temporary-orb-not-3d-character',
+    renderer.imageSwapPath === 'none',
+    renderer.spriteFrameSwap === 'false',
+    renderer.true3dAcceptance === 'fail-temporary-orb-no-live-mesh',
+    Boolean(playback),
+    playback?.timingBasis === 'generated-waveform-amplitude-plus-text-class-heuristic',
+    smokeHandsFreePermissionRequests === 0,
+    microphoneApprovedForSession === false,
+    microphoneArmedUntil <= Date.now(),
+  ];
+  if (required.some((value) => !value)) {
+    receipt.status = 'FAIL';
+    throw Object.assign(new Error('The exact packaged onboarding voice integration probe did not satisfy every required gate.'), { receipt });
+  }
+  fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+  fs.writeFileSync(resultPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  process.stdout.write(`WELLBEING_ONBOARDING_VOICE_PROBE_OK ${JSON.stringify({ status: receipt.status, packageVersion: receipt.packageVersion })}\n`);
+  quitApproved = true;
+  localVoiceBridge?.cancelAll();
+  localVoiceBridge?.dispose();
+  localVoicePlaybackUnsubscribe?.();
+  localSpeechProvider?.dispose();
+  mainWindow.destroy();
+  await stopBundledRuntime(bundledRuntime);
+  app.exit(0);
+}
+
+async function writeOnboardingVoiceProbeFailureAndExit(error) {
+  const resultPath = path.resolve(onboardingVoiceProbeResult);
+  const receipt = error?.receipt ?? {
+    schema: 'wellbeing.onboarding-voice-integration-probe.v1',
+    status: 'FAIL',
+    packageVersion: app.getVersion(),
+    setupZipSha256: onboardingVoiceProbeSetupHash?.toUpperCase() ?? null,
+    testedAtUtc: new Date().toISOString(),
+    errorName: error instanceof Error ? error.name : 'UnknownError',
+    errorMessage: error instanceof Error ? error.message : String(error),
+  };
+  try {
+    fs.mkdirSync(path.dirname(resultPath), { recursive: true });
+    if (!fs.existsSync(resultPath)) fs.writeFileSync(resultPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+  } catch {
+    // The process still exits non-zero if the bounded receipt cannot be written.
+  }
+  process.stderr.write(`WELLBEING_ONBOARDING_VOICE_PROBE_ERROR ${JSON.stringify(receipt)}\n`);
+  quitApproved = true;
+  localVoiceBridge?.cancelAll();
+  localVoiceBridge?.dispose();
+  localVoicePlaybackUnsubscribe?.();
+  localSpeechProvider?.dispose();
+  await stopBundledRuntime(bundledRuntime);
+  app.exit(1);
+}
+
 async function createWindow() {
   const icon = createBrandIcon();
   const iconPath = path.join(__dirname, 'assets', 'wellbeing-companion-icon.png');
@@ -896,7 +1250,13 @@ async function createWindow() {
     minWidth: 960,
     minHeight: 680,
     ...windowPresentation.window,
-    show: visualPreviewMode ? false : windowPresentation.window.show,
+    // The exact-package onboarding probe must traverse the same visible-window
+    // IPC trust gate as an ordinary first launch. It is created fully
+    // transparent and offscreen with no taskbar entry, so verification remains
+    // non-disruptive without inventing a hidden-window security exception.
+    show: onboardingVoiceProbeMode ? true : smokeMode || visualPreviewMode ? false : windowPresentation.window.show,
+    opacity: onboardingVoiceProbeMode ? 0 : windowPresentation.window.opacity,
+    skipTaskbar: smokeMode || visualPreviewMode || onboardingVoiceProbeMode,
     backgroundColor: '#21162a',
     icon,
     webPreferences: {
@@ -904,11 +1264,14 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.cjs'),
       ...CONFIGURED_SECURITY,
       ...windowPresentation.webPreferences,
-      backgroundThrottling: visualPreviewMode ? false : windowPresentation.webPreferences.backgroundThrottling,
-      offscreen: visualPreviewMode,
+      backgroundThrottling: smokeMode || visualPreviewMode || onboardingVoiceProbeMode ? false : windowPresentation.webPreferences.backgroundThrottling,
+      offscreen: smokeMode || visualPreviewMode || onboardingVoiceProbeMode,
       spellcheck: true,
     },
   });
+  if (smokeMode && typeof mainWindow.webContents.setFrameRate === 'function') {
+    mainWindow.webContents.setFrameRate(30);
+  }
   setNativeWindowMode(initialWindowMode);
   mainWindow.on('page-title-updated', (event) => {
     event.preventDefault();
@@ -916,12 +1279,12 @@ async function createWindow() {
   });
   if (smokeMode) mainWindow.setIgnoreMouseEvents(true);
   mainWindow.on('minimize', (event) => {
-    if (smokeMode || visualPreviewMode) return;
+    if (smokeMode || visualPreviewMode || onboardingVoiceProbeMode) return;
     event.preventDefault();
     hideToTray();
   });
   mainWindow.on('close', (event) => {
-    if (quitApproved || sessionEnding || smokeMode || visualPreviewMode) return;
+    if (quitApproved || sessionEnding || smokeMode || visualPreviewMode || onboardingVoiceProbeMode) return;
     event.preventDefault();
     void handleWindowCloseRequest();
   });
@@ -948,7 +1311,7 @@ async function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('did-fail-load', async (_event, errorCode, _description, _url, isMainFrame) => {
-    if (!isMainFrame || errorCode === -3 || smokeMode || visualPreviewMode) return;
+    if (!isMainFrame || errorCode === -3 || smokeMode || visualPreviewMode || onboardingVoiceProbeMode) return;
     await mainWindow.loadFile(path.join(__dirname, 'offline.html'));
   });
   mainWindow.webContents.on('did-finish-load', () => {
@@ -959,14 +1322,21 @@ async function createWindow() {
     }
     if (visualPreviewMode && isSameAppOrigin(mainWindow.webContents.getURL(), BUNDLED_TARGET_URL)) {
       setTimeout(() => void runVisualPreviewCapture().catch(writeVisualPreviewFailureAndExit), 300);
+      return;
+    }
+    if (onboardingVoiceProbeMode && isSameAppOrigin(mainWindow.webContents.getURL(), BUNDLED_TARGET_URL)) {
+      mainWindow.showInactive();
+      mainWindow.setOpacity(0);
+      setTimeout(() => void runOnboardingVoiceProbe().catch(writeOnboardingVoiceProbeFailureAndExit), 300);
     }
   });
   mainWindow.once('ready-to-show', () => {
-    if (!smokeMode && !visualPreviewMode) mainWindow.show();
+    if (!smokeMode && !visualPreviewMode && !onboardingVoiceProbeMode) mainWindow.show();
   });
   if (gpuSandboxCompatibility.startupSettleMs > 0) await waitFor(gpuSandboxCompatibility.startupSettleMs);
   const initialRendererTarget = new URL(BUNDLED_TARGET_URL);
   initialRendererTarget.searchParams.set('layout', initialWindowMode);
+  if (!smokeMode) initialRendererTarget.searchParams.set('desktop', '1');
   initialNavigationEvidence = await loadInitialTargetWithRetry({
     load: () => mainWindow.loadURL(initialRendererTarget.toString()),
     wait: waitFor,
@@ -985,6 +1355,8 @@ app.on('before-quit', (event) => {
 app.on('will-quit', () => {
   disarmMicrophone();
   localVoiceBridge?.dispose();
+  localVoicePlaybackUnsubscribe?.();
+  localSpeechProvider?.dispose();
   void stopBundledRuntime(bundledRuntime);
 });
 
@@ -1000,19 +1372,28 @@ app.whenReady().then(async () => {
       : createChatterboxLocalVoiceProvider({
         runtimeRoot: path.join(app.getPath('userData'), 'VoiceRuntime'),
       });
+    localVoicePlaybackUnsubscribe = localVoiceProvider.onPlaybackStart?.((event) => {
+      if (onboardingVoiceProbeMode) onboardingVoiceProbePlaybackEvent = event;
+      if (!mainWindow || mainWindow.isDestroyed() || mainWindow.webContents.isDestroyed()) return;
+      mainWindow.webContents.send('wellbeing:local-voice-playback-start', event);
+    });
     localVoiceBridge = createLocalVoiceBridge({
       provider: localVoiceProvider,
       approvedProviderId: smokeMode || visualPreviewMode ? null : CHATTERBOX_PROVIDER_ID,
       speakTimeoutMs: 75_000,
     });
+    localSpeechProvider = smokeMode || visualPreviewMode ? null : createLocalSpeechProvider();
     registerIpc();
     await createWindow();
   } catch (error) {
     if (smokeMode) return writeSmokeFailureAndExit(error);
     if (visualPreviewMode) return writeVisualPreviewFailureAndExit(error);
+    if (onboardingVoiceProbeMode) return writeOnboardingVoiceProbeFailureAndExit(error);
     dialog.showErrorBox('The wellbeing companion could not start', error instanceof Error ? error.message : String(error));
     quitApproved = true;
     localVoiceBridge?.dispose();
+    localVoicePlaybackUnsubscribe?.();
+    localSpeechProvider?.dispose();
     app.exit(1);
   }
 });

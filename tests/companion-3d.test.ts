@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   COMPANION_3D_RENDERER,
@@ -20,8 +18,6 @@ import {
   type CompanionPoseInput,
   type CompanionPartPose,
 } from "../src/lib/companion-3d";
-
-const root = fileURLToPath(new URL("../", import.meta.url));
 
 function input(overrides: Partial<CompanionPoseInput> = {}): CompanionPoseInput {
   return {
@@ -338,72 +334,5 @@ describe("articulated companion pose", () => {
     expect(byId(first, "body").position.y - byId(reducedNeutral, "body").position.y).toBeLessThanOrEqual(0.0121);
     expect(byId(first, "hand-right").position.y).toBeGreaterThan(byId(reducedNeutral, "hand-right").position.y);
     expect(byId(first, "mouth").scale.y).toBeGreaterThan(byId(reducedNeutral, "mouth").scale.y);
-  });
-});
-
-describe("runtime model source", () => {
-  it("enables WebGL depth rendering, triangle meshes, normals, lighting, and requestAnimationFrame", () => {
-    const component = readFileSync(`${root}src/components/AnimatedMascot.tsx`, "utf8");
-    expect(component).toMatch(/attribute vec3 a_position/);
-    expect(component).toMatch(/attribute vec3 a_normal/);
-    expect(component).toMatch(/u_viewProjection/);
-    expect(component).toMatch(/u_normalMatrix/);
-    expect(component).toMatch(/gl\.enable\(gl\.DEPTH_TEST\)/);
-    expect(component).toMatch(/gl\.clear\(gl\.COLOR_BUFFER_BIT \| gl\.DEPTH_BUFFER_BIT\)/);
-    expect(component).toMatch(/gl\.drawElements\(gl\.TRIANGLES/);
-    expect(component).toMatch(/requestAnimationFrame/);
-    expect(component).toContain("resolveCompanionWorldMatrices(pose)");
-    expect(component).toContain("normalMatrixForModelMatrix(worldModel)");
-  });
-
-  it("presents the live mesh inside a state-responsive spatial theatre", () => {
-    const app = readFileSync(`${root}src/App.tsx`, "utf8");
-    const component = readFileSync(`${root}src/components/AnimatedMascot.tsx`, "utf8");
-    const styles = readFileSync(`${root}src/styles.css`, "utf8");
-    expect(app).toContain("REAL-TIME 3D PRESENCE");
-    expect(app).toContain("Articulated WebGL character · local visual state");
-    expect(component).toContain("data-presence-state");
-    expect(component).toContain("stage-depth-ring");
-    expect(component).toContain("mascot-ground-shadow");
-    expect(component).toContain("mascot-plinth");
-    expect(component).toMatch(/fillLight[\s\S]*bounceLight[\s\S]*specular/);
-    expect(styles).toContain("perspective: 980px");
-    expect(styles).toContain("transform-style: preserve-3d");
-    expect(styles).toMatch(/\.mascot-3d-stage[^}]*width:\s*480px[^}]*height:\s*500px/);
-    expect(styles).toMatch(/\.presence-panel[^}]*min-height:\s*590px/);
-    expect(component).toContain("COMPANION_VISUAL_PROFILE.silhouette");
-  });
-
-  it("keeps one renderer lifecycle while prop transitions flow through motionRef without resetting motionTick", () => {
-    const component = readFileSync(`${root}src/components/AnimatedMascot.tsx`, "utf8");
-    const lifecycle = component.slice(component.indexOf("RENDERER_LIFECYCLE_INVARIANT"));
-    expect(lifecycle).toMatch(/useEffect\(\(\) => \{[\s\S]*?\n  \}, \[\]\);/);
-    expect(component).toContain("motionRef.current = { identity, expression, waving, listening, speaking, guiding, viseme }");
-    expect(component).toContain("}, [identity, expression, waving, listening, speaking, guiding, viseme]);");
-    expect(component).toContain("buildCompanionPose({ ...motionRef.current");
-    expect(component).toContain('rendererLifecycle = "mount-only-live-motion-ref"');
-    expect(component.match(/dataset\.motionTick = "0"/g)).toHaveLength(1);
-    expect(component).toContain("dataset.motionTick = String(renderedFrames)");
-    expect(component).toContain("dataset.motionRevision = String(motionRevisionRef.current)");
-  });
-
-  it("has no PNG, image element, texture, or image-swap dependency in the application runtime", () => {
-    const app = readFileSync(`${root}src/App.tsx`, "utf8");
-    const component = readFileSync(`${root}src/components/AnimatedMascot.tsx`, "utf8");
-    for (const source of [app, component]) {
-      expect(source).not.toMatch(/companion-[^"']+\.png/i);
-      expect(source).not.toMatch(/new Image\s*\(/);
-      expect(source).not.toMatch(/drawImage\s*\(/);
-      expect(source).not.toMatch(/sampler2D|TEXTURE_2D|texImage2D/);
-    }
-    expect(app).not.toMatch(/<img\b/);
-  });
-
-  it("labels the deterministic procedural non-picture compatibility path as not 3D", () => {
-    const component = readFileSync(`${root}src/components/AnimatedMascot.tsx`, "utf8");
-    expect(component).toContain("compatibility-canvas-2d");
-    expect(component).toContain("Compatibility fallback · not 3D");
-    expect(component).toContain("drawProceduralFallback");
-    expect(component).not.toContain("image.src");
   });
 });

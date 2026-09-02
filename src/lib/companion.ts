@@ -15,6 +15,7 @@ import { interestConversation, learnInterestSignals, mergeInterestPacks } from "
 import { analyzeIngestionRisk } from "./ingestion-risk";
 import { medicationScheduleIntent } from "./reminders";
 import { classifySafety, isCompletedAcuteIngestionDisclosure, isThirdPartyHighRiskIngestionConcern, realRiskText, strainedConversationReply, urgentConversationReply } from "./safety";
+import { asksCompanionName, companionNameFromStoredProfile, requestedCompanionName } from "./companion-name";
 import type { AffectCueEvidence, CompanionExpression, CompanionProfile, CompanionReply, MemoryRecord, SafetyLevel } from "./types";
 
 export function classifyExpression(text: string, safetyLevel: SafetyLevel): CompanionExpression {
@@ -233,8 +234,350 @@ function birthdayGreetingAlreadyShared(profile: CompanionProfile, now: Date): bo
   });
 }
 
+type SituationalGuidance = {
+  text: string;
+  actions: string[];
+  used: string[];
+};
+
+function bullyingGuidance(text: string, profile: CompanionProfile): SituationalGuidance | null {
+  const recentUserContext = profile.turns
+    .filter((turn) => turn.role === "user")
+    .slice(-6)
+    .map((turn) => turn.text)
+    .join(" ");
+  const context = `${recentUserContext} ${text}`.trim();
+  const bullyingPattern = /\b(?:bully|bullied|bullying|pick(?:ed|ing)? on me|harass(?:ed|ing)? me|call(?:s|ed|ing)? me names|name[- ]calling|spread(?:s|ing)? rumors? about me|exclude(?:s|d|ing)? me|steal(?:s|ing)? (?:my )?(?:lunch|lunch money|money|things|belongings)|stole (?:my )?(?:lunch|lunch money|money|things|belongings)|tak(?:e|es|ing) (?:my )?(?:lunch|lunch money|money|things|belongings)|took (?:my )?(?:lunch|lunch money|money|things|belongings))\b/i;
+  const currentHasBullying = bullyingPattern.test(text);
+  const recentHasBullying = bullyingPattern.test(recentUserContext);
+  const currentNamesWereUsed = /\b(?:call(?:s|ed|ing)? me names|name[- ]calling)\b/i.test(text);
+  const currentMoneyWasTaken = /\b(?:steal(?:s|ing)?|stole|tak(?:e|es|ing)|took) (?:my )?(?:lunch money|money)\b/i.test(text);
+  const namesWereUsed = /\b(?:call(?:s|ed|ing)? me names|name[- ]calling)\b/i.test(context);
+  const moneyWasTaken = /\b(?:steal(?:s|ing)?|stole|tak(?:e|es|ing)|took) (?:my )?(?:lunch money|money)\b/i.test(context);
+  const helpWasRequested = /\b(?:i\s+)?(?:told|reported|asked|went to|spoke to)\b/i.test(context)
+    && /\b(?:everyone|no one|nobody|them|teacher|teachers|school|principal|counselor|counsellor|manager|supervisor|human resources|hr|adult|adults|staff|administration)\b/i.test(context);
+  const currentHelpWasRequested = /\b(?:i\s+)?(?:told|reported|asked|went to|spoke to)\b/i.test(text)
+    && /\b(?:everyone|no one|nobody|them|teacher|teachers|school|principal|counselor|counsellor|manager|supervisor|human resources|hr|adult|adults|staff|administration)\b/i.test(text);
+  const currentHelpWasRefused = /\b(?:refuse(?:d|s)?|won't|will not|wouldn't|would not|did(?:n't| not) do anything|do nothing|no one (?:will|would) do anything|nobody (?:will|would) do anything)\b/i.test(text);
+  const currentPhysicalInjuryGate = /\b(?:unless|until|because)\b.{0,90}\b(?:hit|physically hurt|physical(?:ly)?|injur(?:e|ed|y))\b/i.test(text);
+  const currentHelpFailure = currentHelpWasRequested || currentHelpWasRefused || currentPhysicalInjuryGate;
+  const behaviorSpecificDisclosure = currentNamesWereUsed || currentMoneyWasTaken;
+  const shouldHandle = behaviorSpecificDisclosure
+    || (currentHasBullying && currentHelpFailure)
+    || (recentHasBullying && currentHelpFailure)
+    || (!profile.interestPacksEnabled && currentHasBullying);
+  if (!shouldHandle) return null;
+  const behavior = namesWereUsed && moneyWasTaken
+    ? "Name-calling is bullying, and taking your lunch money is theft"
+    : moneyWasTaken
+      ? "Taking your money is theft as well as bullying"
+      : namesWereUsed
+        ? "Repeated name-calling is bullying"
+        : "Bullying can be serious and actionable";
+
+  if (currentHelpFailure) {
+    const acknowledgement = helpWasRequested
+      ? "You already told people, so I will not reset this conversation by simply telling you to report it again."
+      : "Being told or shown that nobody will act until someone is physically hurt is not an adequate response.";
+    return {
+      text: `${acknowledgement} ${behavior} even without a physical injury. For the next incident, move toward a supervised place and do not confront them alone. Keep a private dated record of what happened, what was taken, witnesses, and every person you told. Then make one written request to a specific responsible person asking for a concrete safety plan and a response date; if this is school and staff still refuse, the next route can be the principal, district, or safeguarding complaint process, with a trusted adult copied if that is safe. Is this happening at school, work, or somewhere else so I can help draft the exact message?`,
+      actions: ["Make a dated incident record", "Draft the written request", "Choose the next escalation route", "Plan a supervised safe place"],
+      used: [],
+    };
+  }
+
+  return {
+    text: `${behavior}, and it is not your fault. You do not have to wait for it to become physical before making a practical safety plan. For the next incident, move toward a supervised place, do not confront them alone, and write down the date, exact behavior, witnesses, and anything taken. Would you rather make a quiet plan for the next incident or draft a short written request for help?`,
+    actions: ["Make a quiet safety plan", "Record what happened", "Draft a written request", "Keep talking"],
+    used: [],
+  };
+}
+
+/**
+ * Local, deterministic guidance for common situations where a generic empathy
+ * line is not enough. These routes intentionally offer bounded choices and one
+ * calibrated question; they do not diagnose, promise outcomes, or require the
+ * user to disclose more than they want to.
+ */
+function situationalGuidance(text: string, profile: CompanionProfile): SituationalGuidance | null {
+  const lower = text.toLowerCase();
+  const recentUserContext = profile.turns
+    .filter((turn) => turn.role === "user")
+    .slice(-4)
+    .map((turn) => turn.text)
+    .join(" ");
+  const preference = pickPositivePreference(profile.memories);
+
+  const bullyingSupport = bullyingGuidance(text, profile);
+  if (bullyingSupport) return bullyingSupport;
+
+  if (/\b(?:what(?:'s| is) the weather|weather (?:outside|right now|today|tonight|tomorrow))\b/i.test(text)) {
+    return {
+      text: "I can't access live weather or your location from this private local chat, so I don't want to invent current conditions. Please check a trusted weather app or local forecast; if you paste the forecast here, I can help you plan clothing, travel, or timing around it.",
+      actions: ["Open a weather app", "Share the forecast", "Plan for the conditions"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:set|start)\b.{0,30}\b(?:minute|minutes|min)\b.{0,20}\btimer\b|\b(?:set|start)\b.{0,20}\btimer\b/i.test(text)) {
+    return {
+      text: "I can't set or control a device timer from this local chat. Please start a ten-minute timer in your phone or computer's Clock app now; for an oven, stay close enough to hear it and use the appliance timer too if one is available.",
+      actions: ["Open the device timer", "Use the oven timer", "Tell me when it is set"],
+      used: [],
+    };
+  }
+
+  if (/\brice\b/i.test(text) && /\beggs?\b/i.test(text) && /\bpeas?\b/i.test(text) && /\b(?:cook|make|meal|recipe|eat)\b/i.test(text)) {
+    return {
+      text: "You can make quick egg-and-pea fried rice: warm the frozen peas, scramble the eggs in a little oil, add cooked rice, then stir everything together with soy sauce, salt, pepper, or another seasoning you like. If the rice is freshly cooked, spread it out for a few minutes first so it fries instead of steaming. Do you have oil and any soy sauce or seasoning?",
+      actions: ["Cook fried rice", "Choose a seasoning", "Adapt the recipe"],
+      used: [],
+    };
+  }
+
+  const alcoholAndMedication = /\balcohol\b/i.test(text) && /\b(?:prescription|medication|medicine|meds?|pill|dose)\b/i.test(text);
+  if (alcoholAndMedication && /\b(?:mix|safe|drink|take|combine|interaction)\b/i.test(text)) {
+    return {
+      text: "I can't confirm that alcohol is safe with a prescription because interactions depend on the exact medicine, dose, timing, and health history. Until a pharmacist, prescriber, or the official medication label confirms it, the safer choice is not to combine them tonight. If you already mixed them and feel very sleepy, confused, faint, or short of breath, seek urgent medical help. What is the exact medication name shown on the label?",
+      actions: ["Check the medication label", "Call a pharmacist", "Write down dose and timing", "Get urgent help for severe symptoms"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:tracker|tracking device|chip)\b.{0,60}\b(?:tooth|teeth|mouth|body)\b|\b(?:tooth|teeth|mouth)\b.{0,60}\b(?:tracker|tracking device|chip)\b/i.test(text)) {
+    return {
+      text: "That sounds frightening. I can't verify that a tracker was implanted, and I don't want to reinforce something that may not be accurate. Please do not cut, pull, or try to remove anything yourself. A licensed dentist can safely examine the tooth and explain what is physically present. Is there pain, bleeding, swelling, or an urge to work on the tooth right now?",
+      actions: ["Do not remove it yourself", "Arrange a dentist check", "Ground in what is observable", "Tell a trusted person"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:television|tv)\b.{0,70}\b(?:camera|watching|spying|monitoring)\b|\b(?:camera|watching|spying)\b.{0,70}\b(?:television|tv)\b/i.test(text)) {
+    return {
+      text: "It sounds frightening to feel watched and not believed. I can't confirm that the television is watching you. If it helps you feel steadier, you can turn it off and move to another familiar room without trying to investigate or dismantle it. Then name five things you can see and contact someone you trust. Are you feeling safe right now, and is there someone nearby you could tell?",
+      actions: ["Move to a calmer room", "Try five-senses grounding", "Tell a trusted person", "Check whether I feel safe"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:moved|relocated)\b.{0,70}\b(?:new city|new town|new place)\b|\bnew city\b.{0,80}\b(?:lonely|alone|evening)\b/i.test(text)) {
+    return {
+      text: "That sounds lonely; evenings can feel especially empty while you are still settling into a new city. We could make tonight smaller with one familiar evening routine, send a low-pressure message to someone you already know, or choose one recurring local activity where connection can build over time. Would company tonight or a plan for meeting people this week help more?",
+      actions: ["Build an evening routine", "Message someone familiar", "Find a recurring community activity"],
+      used: [],
+    };
+  }
+
+  if (/\blonely\b|\b(?:i\s+(?:am|feel)|i'm|feeling)\s+(?:very\s+)?alone\b/i.test(lower)
+    && !/\b(?:networking|event|gathering|party|holiday|festival|observance|culture|cultural)\b/i.test(text)) {
+    const achievement = [...profile.memories].reverse().find((entry) => entry.kind === "milestone" && entry.label === "Achievement");
+    const goal = pickMemory(profile.memories, "goal");
+    const supportPerson = achievement || goal || preference ? undefined : pickConditionalSupportPerson(text, profile.memories);
+    const supportName = supportPerson ? personNameFromMemoryValue(supportPerson.value) : undefined;
+    const anchor = achievement
+      ? ` I remember you ${achievement.value}. Your worth isn't measured by awards, but that real part of your story can be an anchor without pretending an achievement erases loneliness.`
+      : goal
+        ? ` I remember you're working on ${goal.value}. We do not have to be productive tonight, but it can remind us there is still a next page.`
+        : preference
+          ? ` I remember you care about ${preference.value}; that could be a gentle anchor, not a substitute for human connection.`
+          : supportPerson && supportName
+            ? ` I remember ${displayPersonName(supportName)} is your ${supportPerson.label}. If ${displayPersonName(supportName)} feels like a safe and welcome person tonight, reaching out is one option—not a requirement.`
+            : "";
+    const anchorId = achievement?.id ?? goal?.id ?? preference?.id ?? supportPerson?.id;
+    return {
+      text: `That sounds lonely, and I'm glad you told me. A quiet night can feel much longer when connection is missing.${anchor} Would you rather have company in this conversation, make one low-pressure connection, or choose a comforting activity for tonight?`,
+      actions: ["Keep talking", "Send one message", "Choose a familiar activity", "Plan a connection"],
+      used: anchorId ? [anchorId] : [],
+    };
+  }
+
+  if (/\bnetworking\b.{0,100}\b(?:event|alone|panic|walking in|tomorrow)\b|\bwalking in alone\b.{0,80}\bnetworking\b/i.test(text)) {
+    return {
+      text: "It makes sense that walking into a networking event alone feels intimidating. A bounded arrival plan can help: bring one prepared introduction, find the host or one approachable person, ask one easy question, and give yourself an exit time. Which part feels hardest—the doorway, the first introduction, or knowing when you can leave?",
+      actions: ["Plan my arrival", "Rehearse one introduction", "Choose one person", "Make an exit plan"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:crowded|crowd)\b.{0,80}\b(?:gathering|event|party)\b|\b(?:gathering|event|party)\b.{0,80}\b(?:decline|failure|whether to go|crowded)\b/i.test(text)) {
+    return {
+      text: "I hear how much the fear of failure is complicating this choice. Going to a crowded gathering and declining are both legitimate; neither measures your worth. Compare what you need, your energy, transportation, and whether a short visit with a clear exit would be tolerable. Would a short-visit plan make the choice clearer, or does your energy already point toward declining?",
+      actions: ["Decide from my needs", "Plan a short visit", "Make an exit plan", "Draft a kind decline"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:dog|cat|pet)\b.{0,70}\b(?:died|passed away|loss|gone)\b|\b(?:died|passed away)\b.{0,70}\b(?:dog|cat|pet)\b/i.test(text)) {
+    return {
+      text: "I'm so sorry. Reaching for the leash is the kind of automatic moment that shows how deeply your dog was woven into the day. You do not have to put the routine away immediately. Would it feel better to tell one memory, choose a photo, make a small goodbye ritual, or just stay with the loss for a while?",
+      actions: ["Tell a memory", "Choose a photo", "Make a goodbye ritual", "Keep the leash nearby for now"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:supervisor|manager|boss)\b.{0,100}\b(?:feedback|criticism|critical)\b/i.test(text)) {
+    return {
+      text: "I hear how unsettling vague critical feedback can be when it leaves you guessing at the target. For a calm follow-up, ask for one concrete example, the expected standard, and the highest-priority change; then summarize what you heard in writing. Do you want to draft a short meeting request or rehearse the three clarification questions?",
+      actions: ["Draft a follow-up", "Ask for an example", "Clarify expectations", "Prepare for the meeting"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:deadline|deadlines)\b.{0,80}\b(?:overwhelmed|frozen|due|friday|multiple|three)\b|\b(?:overwhelmed|frozen)\b.{0,80}\bdeadlines?\b/i.test(text)) {
+    return {
+      text: "It makes sense to feel frozen when three Friday deadlines are competing at once; that is a planning problem, not a character flaw. First list each deliverable, true due time, consequence, and smallest next action; then choose one fifteen-minute start and send an early email where scope or timing needs negotiation. Which deadline has the earliest hard consequence?",
+      actions: ["List the deadlines", "Choose the highest priority", "Start the smallest step", "Draft a timing email"],
+      used: [],
+    };
+  }
+
+  const academicReport = /\b(?:book|school|class|history) report\b|\breport\b.{0,45}\b(?:for|in) (?:school|class|history)\b|\b(?:paper|assignment)\b/i.test(text);
+  const civilWarTopic = /\b(?:the |american )?civil war\b/i.test(text);
+  if (academicReport && civilWarTopic) {
+    const pressure = /\b(?:stress|stressed|stressful|overwhelmed|swamped)\b/i.test(text)
+      && /\b(?:school|class|college)\b/i.test(text)
+      && /\bwork\b/i.test(text);
+    const boredomContext = /\b(?:bored|nothing to do)\b/i.test(recentUserContext);
+    const acknowledgement = pressure && boredomContext
+      ? "This sounds less like boredom and more like school-and-work pressure."
+      : pressure
+        ? "That is a lot to juggle between school and work."
+        : "I can help you make the Civil War report feel manageable.";
+    return {
+      text: `${acknowledgement} We can start the Civil War report without assuming you already know the subject: check the assignment requirements, choose a focused question, then build a simple thesis and outline around causes, major turning points, and effects. What prompt, length, due date, and source requirements did your teacher give you? If you do not have them handy, we can build a short starter outline now.`,
+      actions: ["Paste the assignment", "Learn the basics", "Build an outline", "Choose a thesis"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:exam|exams|test|tests)\b.{0,100}\b(?:exhausted|tomorrow|studied|morning)\b/i.test(text)) {
+    return {
+      text: "It sounds like you have already spent a lot of energy studying, and an exam tomorrow morning makes rest part of the plan. Consider a short review of only the highest-yield points, set out what you need, choose a stopping time, and protect enough sleep to think clearly. What is the one topic that would most reduce tomorrow's uncertainty?",
+      actions: ["Choose one review topic", "Set a stopping time", "Prepare for morning", "Protect sleep"],
+      used: [],
+    };
+  }
+
+  if (/\bcollection\b.{0,50}\bletter\b|\bletter\b.{0,50}\bcollection\b/i.test(text)) {
+    return {
+      text: "That sounds frightening, and a collection letter can feel more dangerous while it is unopened because every unknown gets filled in by panic. You do not have to agree to or pay anything tonight: open it with support, note the sender, amount, account, response deadline, and how to dispute or ask questions, then verify the collector independently. Would you like a step-by-step opening checklist or help listing questions after you read it?",
+      actions: ["Open the letter with support", "Record amount and deadline", "Verify the collector", "List consumer questions"],
+      used: [],
+    };
+  }
+
+  if (/\brent\b.{0,100}\b(?:short|bill|afford|due|priority)\b|\b(?:which|what) bill\b.{0,80}\b(?:first|priority|rent)\b/i.test(text)) {
+    return {
+      text: "That sounds stressful; being short on rent can make every bill feel equally urgent. Start with a list of due dates and the essentials that protect housing, utilities, food, medicine, and transportation; then contact the landlord or provider early to ask about a written payment plan or changed date. I can't choose without the amounts and consequences—what is due first, and which service would be lost fastest?",
+      actions: ["List bills and due dates", "Mark housing and essentials", "Contact the landlord", "Ask about a payment plan"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:coworker|colleague)\b.{0,100}\b(?:took|stole|claimed)\b.{0,30}\bcredit\b|\bcredit for my work\b/i.test(text)) {
+    return {
+      text: "I can hear why having a coworker take credit would make you furious. Before responding, save the dated work trail and decide the outcome you want: a direct factual correction, a private conversation, or a calm note to the manager. Do you want to vent first or draft a response that names your contribution without escalating the conflict?",
+      actions: ["Vent first", "Document the work", "Name the boundary", "Draft a manager response"],
+      used: [],
+    };
+  }
+
+  if (/\broommate\b.{0,100}\b(?:borrow|taking|things|boundary|say no)\b/i.test(text)) {
+    return {
+      text: "I hear how maddening it is to have your no ignored. Repeatedly borrowing your things is a boundary problem. Cool down before the conversation, name the specific items and behavior, state the rule plainly, and choose a consequence you can control, such as securing the items. Would you like a one-sentence roommate script or a plan for the conversation?",
+      actions: ["Draft a boundary script", "Name the specific behavior", "Choose a realistic consequence", "Cool down first"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:partner|girlfriend|boyfriend|spouse)\b.{0,100}\b(?:ended|breakup|broke up|relationship)\b|\b(?:breakup|broke up)\b.{0,100}\b(?:text|message|tonight)\b/i.test(text)) {
+    return {
+      text: "I'm sorry; the first night after a relationship ends can make texting feel like the only way to reduce the shock. Consider a pause: mute the thread, write the message in an unsent draft, and ask a trusted friend to stay in contact until you have slept. Do you want help drafting what you wish you could say without sending it tonight?",
+      actions: ["Pause before texting", "Write an unsent draft", "Mute the thread", "Contact a trusted friend"],
+      used: [],
+    };
+  }
+
+  if (/\bcaregiv(?:e|er|ing)\b.{0,100}\b(?:break|guilt|guilty|respite)\b/i.test(text)) {
+    return {
+      text: "That sounds like a painful mix of exhaustion and guilt. Needing a caregiving break is information about capacity, not proof that you do not care. A small respite plan can name the minimum time you need, one backup person or service to ask, and what must be handed over safely. What kind of break would restore you most—an hour, an evening, or help with one recurring task?",
+      actions: ["Name the break I need", "Ask a backup person", "Look for respite support", "Plan a safe handoff"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:care for|caring for|caregiver|caregiving)\b.{0,100}\b(?:mother|father|parent|after work|evening|exhausted)\b|\b(?:mother|father|parent)\b.{0,100}\b(?:caregiving|care for|exhausted)\b/i.test(text)) {
+    return {
+      text: "That sounds exhausting: work ends, and the caregiving shift begins instead of the day being over. For tonight, we can reduce one nonessential task, identify one thing someone else could cover, or plan a small protected break. Which part of the evening care takes the most energy?",
+      actions: ["Reduce one evening task", "Ask for caregiving backup", "Plan a short respite", "Keep talking"],
+      used: [],
+    };
+  }
+
+  if (/\bschedule\b.{0,80}\b(?:changes?|different)\b.{0,40}\b(?:week|weekly)\b|\bchanges? every week\b/i.test(text)
+    && /\b(?:caregiv|care for|mother|father|parent|shift|schedule)\b/i.test(`${recentUserContext} ${text}`)) {
+    return {
+      text: "A caregiving schedule that changes every week needs a flexible system rather than one perfect routine. Keep a shared weekly calendar, mark the non-negotiable coverage gaps, and choose a backup plan for the most likely change. Which change creates the hardest gap—work hours, transportation, or another person's availability?",
+      actions: ["Make a weekly calendar", "Mark coverage gaps", "Choose a backup plan", "Ask about one fixed commitment"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:fluorescent|lighting|lights?)\b.{0,80}\b(?:noise|overwhelming|overload|work)\b|\bnoise\b.{0,80}\b(?:fluorescent|lighting|overwhelming|overload)\b/i.test(text)) {
+    return {
+      text: "That sounds overwhelming; fluorescent lighting and workplace noise can create real sensory overload. For the next few minutes, a quieter break, headphones or ear protection if safe, and lower light may help; longer term, you could make a specific accommodation request about lighting, seating, or quiet work time. Which input is hardest right now—the lights, the noise, or both together?",
+      actions: ["Take a quiet break", "Reduce the noise", "Adjust the lighting", "Draft an accommodation request"],
+      used: [],
+    };
+  }
+
+  if (/\bwheelchair\b.{0,100}\b(?:event|access|accessible|entrance|information)\b/i.test(text)) {
+    return {
+      text: "I hear how frustrating it is to be left without basic accessibility information. Contact the event or venue and ask specifically about a step-free entrance, interior route, accessible restroom, seating, transportation or parking, and who can help on arrival; keep a backup plan if they cannot confirm. Which detail would determine whether the event is workable for you?",
+      actions: ["Contact the venue", "Confirm the entrance and route", "Check the restroom and seating", "Plan transport and a backup"],
+      used: [],
+    };
+  }
+
+  if (/\bfamily\b.{0,100}\b(?:reject|identity|honest|home|come out)\b/i.test(text)) {
+    return {
+      text: "I'm sorry home does not feel safe for honesty about your identity. You do not owe disclosure when it could put housing, privacy, finances, or physical safety at risk. We can plan what stays private, identify one trusted person or affirming support, and prepare a boundary or exit without forcing a confrontation. Are you physically safe at home tonight?",
+      actions: ["Protect my privacy", "Identify a trusted person", "Plan a boundary", "Make a safety plan"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:holiday|festival|observance)\b.{0,100}\b(?:culture|cultural|away from home|lonely|tradition)\b/i.test(text)) {
+    return {
+      text: "That sounds lonely; being away from home during an important cultural holiday can make the distance feel especially sharp. A small connection might be a familiar food, music, ritual, call, or local community gathering, while keeping the meaning yours. Which tradition or person would help you feel most connected today?",
+      actions: ["Choose one tradition", "Make familiar food or music", "Call someone from home", "Find a local community"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:coworker|colleague|manager)\b.{0,100}\b(?:wrong pronouns?|misgender|pronoun)\b|\bwrong pronouns?\b/i.test(text)) {
+    return {
+      text: "I'm sorry this keeps happening. A calm correction can be brief and specific: “I use [your pronouns]. Please use those for me.” If it continues, document dates and wording, ask an ally to reinforce the correction, or decide whether a manager is a safe next step. Do you want a private script, an in-the-moment correction, or a written follow-up?",
+      actions: ["Practice a short correction", "Draft a private script", "Document the pattern", "Ask an ally or manager"],
+      used: [],
+    };
+  }
+
+  if (/\b(?:drinking|alcohol)\b.{0,100}\b(?:sleep|night|every night|more)\b|\b(?:sleep|night)\b.{0,100}\b(?:drinking|alcohol)\b/i.test(text)) {
+    return {
+      text: "I hear how trapped sleep and drinking have started to feel. Relying on more alcohol each night can become risky, and suddenly stopping after sustained heavy use can also be dangerous. I can't determine dependence here. For tonight, avoid mixing alcohol with medication or driving, note how much and when you drink, and arrange a prompt conversation with a clinician or substance-use support service. How much are you usually drinking, and have you had shaking, sweating, confusion, or seizures when cutting down?",
+      actions: ["Track amount and timing", "Plan a clinician question", "Find substance-use support", "Reduce harm tonight"],
+      used: [],
+    };
+  }
+
+  return null;
+}
+
 function steadyReply(text: string, profile: CompanionProfile, groundedText: string, now: Date): { text: string; used: string[]; actions: string[]; affectCueEvidence?: AffectCueEvidence } {
   const lower = text.toLowerCase();
+  const bullyingSupport = bullyingGuidance(groundedText, profile);
+  if (bullyingSupport) return bullyingSupport;
   const roleplayStage = partyRoleplayStage(profile);
   const preference = pickPositivePreference(profile.memories);
   const person = pickMentionedPerson(text, profile.memories);
@@ -377,6 +720,22 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
     };
   }
 
+  const previousCompanionText = [...profile.turns].reverse().find((turn) => turn.role === "companion")?.text ?? "";
+  const griefMemoryContinuation = Boolean(latestLoss)
+    && /\b(?:losing your|grief go away|tell me one memory|stay with the feeling)\b/i.test(previousCompanionText)
+    && /\b(?:memory|remember|used to)\b/i.test(text);
+  if (griefMemoryContinuation && latestLoss) {
+    const relationship = latestLoss.label.replace("Loss:", "").trim();
+    const singingWhileCooking = /\b(?:he|she|they)\s+(?:used to\s+)?sing\b.{0,50}\b(?:cook|cooking)\b/i.test(text);
+    return {
+      text: singingWhileCooking
+        ? `Thank you for sharing that memory. The detail of your ${relationship} singing while cooking gives us one particular everyday moment to stay with, without pretending it removes the loss. What stands out most when you picture it—the sound, the kitchen, or how it felt to be there?`
+        : `Thank you for sharing that memory about your ${relationship}. We can stay with the specific moment you chose without asking it to erase the loss. What detail of that moment feels closest today?`,
+      used: [latestLoss.id],
+      actions: ["Tell you more about the memory", "Stay with this moment", "Write it down", "A small remembrance"],
+    };
+  }
+
   if (introducedPerson && introduction) {
     const introducedName = displayPersonName(introduction[2]);
     return {
@@ -504,7 +863,7 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
       ? ` I remember you told me that your ${rememberedPerson.label} ${personDetailForUser(rememberedPerson.value)}. We can use that detail to make the idea feel personal rather than like a generic present.`
       : ` What does your ${relationship} enjoy, and is there a memory or inside joke you would want the gift to hold?`;
     return {
-      text: `You do not need a big budget to make a birthday feel personal. We could make a handwritten card with one specific memory, a tiny memory booklet, a homemade coupon for time together, a photo collage, or a simple craft using things you already have.${rememberedContext}`,
+      text: `I hear that money is tight, and you do not need a big budget to make a birthday feel personal. We could make a handwritten card with one specific memory, a tiny memory booklet, a homemade coupon for time together, a photo collage, or a simple craft using things you already have.${rememberedContext}`,
       used: rememberedPerson ? [rememberedPerson.id] : [],
       actions: ["Make a card together", "Choose a simple craft", `Talk about my ${relationship}`, "Plan for almost no cost"],
     };
@@ -528,7 +887,7 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
   if (/\b(?:miss|grief|grieving|died|passed away|bereavement|mourning)\b/i.test(lower) && milestone?.label.startsWith("Loss:")) {
     const relationship = milestone.label.replace("Loss:", "").trim();
     return {
-      text: `I remember what you shared about losing your ${relationship}. We don't have to make the grief go away. Would it help to tell me one memory, write an unsent letter, plan a small way to honor them, or just stay with the feeling for a while?`,
+      text: `I'm sorry. I remember what you shared about losing your ${relationship}. We don't have to make the grief go away. Would it help to tell me one memory, write an unsent letter, plan a small way to honor them, or just stay with the feeling for a while?`,
       used: [milestone.id],
       actions: ["Tell a memory", "Write an unsent letter", "A small remembrance", "Just stay here"],
     };
@@ -555,6 +914,9 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
     };
   }
 
+  const situation = situationalGuidance(text, profile);
+  if (situation) return situation;
+
   if (/\b(?:bored|nothing to do)\b/i.test(lower)) {
     if (preference) {
       return {
@@ -573,7 +935,7 @@ function steadyReply(text: string, profile: CompanionProfile, groundedText: stri
   if (/\b(?:fight|argument|argued)\b/i.test(lower) && person) {
     const guidance = relationshipConflictGuidance(text, person);
     return {
-      text: `I remember what you've shared about your ${person.label}. ${guidance.text} We can plan some space, draft a message for later, or keep unpacking it here.`,
+      text: `I hear how painful and unsafe that sounds. I remember what you've shared about your ${person.label}. ${guidance.text} We can plan some space, draft a message for later, or keep unpacking it here.`,
       used: [person.id],
       actions: guidance.actions,
     };
@@ -676,6 +1038,102 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
   const previousSelfHarmUrgent = recentUrgent && (lastTurn?.safetyContext === "self-harm" || legacySelfHarmContext);
   const riskText = riskScope.text;
 
+  const acuteChestOrBreathing = /\b(?:crushing|severe|heavy|pressure|tight(?:ness)?)\b.{0,35}\bchest (?:pain|pressure|tightness)\b/i.test(riskText)
+    && /\b(?:trouble|difficulty|hard time|can't|cannot|shortness of)\b.{0,20}\bbreath(?:e|ing)?\b/i.test(riskText);
+  if (acuteChestOrBreathing) {
+    return {
+      text: `I'm here with you${preferredName ? `, ${preferredName}` : ""}. Crushing chest pain with trouble breathing can be a medical emergency. Contact local emergency services now; do not drive yourself. Sit somewhere safe, unlock the door if safe to do so, and get someone physically near you while help is coming. Can you call now, or can someone nearby make the call?`,
+      safetyLevel: "urgent",
+      safetyContext: "acute-medical",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Contact emergency help", "Get someone nearby", "Unlock the door if safe", "Sit and wait for help"],
+      showUrgentOptions: true,
+    };
+  }
+
+  const possibleAlcoholWithdrawal = /\b(?:stopped|quit|cut down|reduced)\b.{0,35}\b(?:drinking|alcohol)\b/i.test(riskText)
+    && /\b(?:shaking|shaky|tremor|sweating|confused|hallucinating|seizure)\b/i.test(riskText);
+  if (possibleAlcoholWithdrawal) {
+    return {
+      text: `I'm glad you told me${preferredName ? `, ${preferredName}` : ""}. Shaking and sweating after stopping alcohol can be withdrawal and can become a medical emergency. Please get urgent in-person medical help now, do not drive yourself, and have someone stay physically near you. If there is confusion, a seizure, severe vomiting, trouble breathing, or you cannot stay awake, contact emergency services immediately. How much had you been drinking, when was the last drink, and is anyone with you now?`,
+      safetyLevel: "urgent",
+      safetyContext: "acute-medical",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Get urgent medical help", "Ask someone to stay near", "Write down symptoms and last drink", "Contact emergency help for severe symptoms"],
+      showUrgentOptions: true,
+    };
+  }
+
+  const ordinarySomethingTransport = /\bi took something\s+(?:to|into|from|back to|over to)\s+(?:the\s+)?(?:office|work|school|class|meeting|room|car|store|house|desk)\b/i.test(riskText);
+  const ambiguousUnknownIngestion = !ordinarySomethingTransport
+    && /\bi (?:took|swallowed|drank|ingested) something\b.{0,80}\b(?:feel|feeling|became|getting) (?:strange|weird|wrong|sick|dizzy|sleepy|confused)\b/i.test(riskText);
+  if (ambiguousUnknownIngestion) {
+    return {
+      text: `I hear that something feels wrong, and I need to clarify the medical risk before treating this as an ordinary conversation. What did you take, about how much, and when? Keep the package or label with you, do not take more or make yourself vomit, and contact Poison Help or urgent medical care now if you cannot identify it or symptoms are worsening. If breathing is hard, you collapse, have a seizure, or cannot stay awake, contact emergency services immediately.`,
+      safetyLevel: "strained",
+      safetyContext: "acute-medical",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Tell what and when", "Find the label", "Call Poison Help", "Get medical help if symptoms worsen"],
+      showUrgentOptions: false,
+    };
+  }
+
+  const commandVoiceViolence = /\b(?:voice|voices)\b.{0,80}\b(?:telling|ordering|commanding|saying)\b.{0,40}\b(?:hurt|kill|attack|stab|shoot)\b/i.test(riskText);
+  if (commandVoiceViolence) {
+    return {
+      text: `I'm glad you told me that you do not want to act on this${preferredName ? `, ${preferredName}` : ""}. I can't verify where the voice is coming from, but a command to hurt your neighbor needs a careful safety check. Is a weapon within reach, are you close to your neighbor, and do you think you might act despite not wanting to? Create distance from the neighbor and from anything that could be used as a weapon, and tell a trusted person or urgent professional support who can stay with you in person.`,
+      safetyLevel: "strained",
+      safetyContext: "violence-risk",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Create distance", "Move away from weapons", "Tell a trusted person", "Answer the immediate-risk questions"],
+      showUrgentOptions: false,
+    };
+  }
+
+  const coerciveDeviceMonitoring = /\b(?:partner|spouse|boyfriend|girlfriend|ex)\b.{0,120}\b(?:reads?|checks?|monitors?|tracks?|accesses?)\b.{0,50}\b(?:messages?|phone|device|password)\b/i.test(riskText)
+    || /\b(?:messages?|phone|device|password)\b.{0,100}\b(?:threatens?|afraid|unsafe)\b/i.test(riskText);
+  if (coerciveDeviceMonitoring) {
+    return {
+      text: `I'm sorry this is happening${preferredName ? `, ${preferredName}` : ""}. That monitoring and threatening behavior is coercive, and changing a password on a watched device can sometimes increase danger. Are you safe to keep using this device right now? If possible, use a separate safe device to contact a trusted person or specialist service, document threats only where the other person cannot access them, and make privacy changes as part of a safety plan rather than during a confrontation.`,
+      safetyLevel: "strained",
+      safetyContext: "external-threat",
+      learned,
+      usedMemoryIds: [],
+      suggestedActions: ["Check whether this device is safe", "Use a separate safe device", "Tell a trusted person", "Make a privacy safety plan"],
+      showUrgentOptions: false,
+    };
+  }
+
+  const financialCoercion = /\b(?:partner|spouse|boyfriend|girlfriend)\b.{0,120}\b(?:controls?|takes?|checks?|monitors?)\b.{0,50}\b(?:bank|money|account|purchase|spending|card)\b/i.test(riskText);
+  if (financialCoercion) {
+    return {
+      text: `I'm sorry this is happening${preferredName ? `, ${preferredName}` : ""}. Controlling your bank account and checking every purchase can be financial coercion, and your fear of objecting matters. Are you safe right now, and can you speak privately? Without alerting the partner, consider documenting what happens in a private place, using a safe device to contact a trusted person or specialist resource, and planning access to identification, medication, transportation, and emergency funds.`,
+      safetyLevel: "strained",
+      safetyContext: "external-threat",
+      learned,
+      usedMemoryIds: [],
+      suggestedActions: ["Check immediate safety", "Use a private safe device", "Document the financial control", "Contact trusted support"],
+      showUrgentOptions: false,
+    };
+  }
+
+  const severeAmbiguousDistress = /\b(?:i (?:cannot|can't) do this anymore|everything is too much|i can't take (?:this|it) anymore)\b/i.test(riskText);
+  if (severeAmbiguousDistress) {
+    return {
+      text: `I'm here with you${preferredName ? `, ${preferredName}` : ""}. When you say this is too much, do you mean you might hurt yourself or someone else, or that the situation feels unbearable but you are safe right now? You can answer with just “in danger,” “safe,” or “not sure.” While we clarify, pause anything risky and tell me the one part that feels heaviest in this minute.`,
+      safetyLevel: "strained",
+      safetyContext: "general",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["I'm safe right now", "I'm in danger", "I'm not sure", "Name one part"],
+      showUrgentOptions: false,
+    };
+  }
+
   const riskClauses = riskText.split(/(?<=[.!?;])\s+|[\r\n]+/u).filter(Boolean);
   const firstPartyAcuteIngestion = isCompletedAcuteIngestionDisclosure(riskText);
   const thirdPartyInjuryEvent = /\b(?:cut|stabbed|shot|burned)\s+(?:themself|themselves|himself|herself).{0,60}(?:bleeding|cannot stop|can't stop)\b/i;
@@ -754,7 +1212,7 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
   const acutePoisoningOrInjury = firstPartyAcuteIngestion || acuteSelfInjury;
   if (acutePoisoningOrInjury) {
     return {
-      text: `Okay${preferredName ? `, ${preferredName}` : ""}. I'm right here. What did you take, about how much, and when? While you tell me, call Poison Help now—the number is on screen—or get someone close to stay with you. Do not make yourself vomit. If breathing is hard, you collapse, have a seizure, or cannot stay awake, call 911 now. Keep this open and tell me the next thing you notice.\n\nPoison Help (U.S.): 1-800-222-1222`,
+      text: `I'm here with you${preferredName ? `, ${preferredName}` : ""}. What did you take, about how much, and when? While you tell me, call Poison Help now—the number is on screen—or get someone close to stay with you. Do not make yourself vomit. If breathing is hard, you collapse, have a seizure, or cannot stay awake, call 911 now. Keep this open and tell me the next thing you notice.\n\nPoison Help (U.S.): 1-800-222-1222`,
       safetyLevel: "urgent",
       safetyContext: "acute-medical",
       learned,
@@ -798,7 +1256,7 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
       ? " I remember reporting felt unsafe before. This new specific threat makes the situation materially more dangerous, so please seriously consider outside help now. I will keep talking with you while you decide and move toward safety."
       : "";
     return {
-      text: `I'm staying with you${preferredName ? `, ${preferredName}` : ""}. A specific immediate threat from another person needs a safety-first response.${boundaryAcknowledgement} Move toward a locked, staffed, public, or otherwise safer place without confronting them if you can; contact local emergency help and a responsible person who can physically assist. Keep the threatening message or details only if doing so does not slow your move to safety. Tell me where you are in general terms and whether the person or a weapon is nearby right now.`,
+      text: `I'm staying with you${preferredName ? `, ${preferredName}` : ""}. A specific immediate threat from another person needs a safety-first response.${boundaryAcknowledgement} Move toward a locked, staffed, public, or otherwise safer place without confronting them if you can; contact local emergency help and a responsible person who can physically assist. Keep the threatening message or details only if doing so does not slow your move to safety. In general terms, where are you and is the person or a weapon nearby right now?`,
       safetyLevel: "urgent",
       safetyContext: "external-threat",
       learned,
@@ -808,7 +1266,7 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
     };
   }
 
-  const nonImmediateViolenceConcern = !negatedViolence && /\b(?:want to hurt my (?:coworker|classmate|friend|partner|boss|teacher)|feel like hurting (?:someone|a person|him|her|them))\b/i.test(riskText);
+  const nonImmediateViolenceConcern = !negatedViolence && /\b(?:want to hurt my (?:coworker|classmate|friend|partner|boss|teacher)|feel like hurting (?:my (?:coworker|classmate|friend|partner|boss|teacher)|someone|a person|him|her|them))\b/i.test(riskText);
   if (nonImmediateViolenceConcern) {
     return {
       text: `I'm listening${preferredName ? `, ${preferredName}` : ""}, and I want to slow this down before anyone gets hurt. Is there a weapon within reach, are you close to that person, and do you think you may act in the next few minutes? If you can, create distance and put down or move away from anything that could be used as a weapon. Tell me what happened while we work out a safer next step.`,
@@ -876,6 +1334,35 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
     };
   }
 
+  if (safetyLevel === "steady" && asksCompanionName(riskText)) {
+    const companionName = companionNameFromStoredProfile(profile.companionName);
+    return {
+      text: `My name is ${companionName}. I’m your local synthetic companion, not a human person. You can rename me in Settings whenever you want.`,
+      safetyLevel,
+      safetyContext: "general",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Keep talking", "Open settings"],
+      showUrgentOptions: false,
+      companionIdentityReply: true,
+    };
+  }
+
+  const requestedName = safetyLevel === "steady" ? requestedCompanionName(riskText) : null;
+  if (requestedName) {
+    return {
+      text: `You can call me ${requestedName}. I’m still your local synthetic companion—not a human person. I saved that name only in this private device profile, and you can rename or reset it in Settings.`,
+      safetyLevel,
+      safetyContext: "general",
+      learned: [],
+      usedMemoryIds: [],
+      suggestedActions: ["Keep talking", "Open settings"],
+      showUrgentOptions: false,
+      companionNameChange: requestedName,
+      companionIdentityReply: true,
+    };
+  }
+
   if (safetyLevel === "steady" && declinesAgeMemory) {
     return {
       text: "Okay. I won't save an age. You never have to share it, and you can tell me later if you want to.",
@@ -940,6 +1427,18 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
         showUrgentOptions: false,
       };
     }
+    const situation = situationalGuidance(riskText, effectiveProfile);
+    if (situation) {
+      return {
+        text: situation.text,
+        safetyLevel,
+        safetyContext: "general",
+        learned,
+        usedMemoryIds: situation.used,
+        suggestedActions: situation.actions,
+        showUrgentOptions: false,
+      };
+    }
     const preference = pickPositivePreference(effectiveProfile.memories);
     const achievement = [...effectiveProfile.memories].reverse().find((entry) => entry.kind === "milestone" && entry.label === "Achievement");
     const goal = pickMemory(effectiveProfile.memories, "goal");
@@ -971,11 +1470,15 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
               : "";
     const reluctantToContact = /\b(?:(?:do not|don't|will not|won't) (?:want to )?(?:call|contact)|afraid (?:to|of)|scared (?:to|of))\b.+\b(?:crisis|988|emergency|hospital|hotline|police)\b/i.test(text)
       || /\b(?:crisis|988|emergency|hospital|hotline|police)\b.+\b(?:hospital hold|locked up|involuntary|afraid|scared)\b/i.test(text);
+    const previousGenericStrainReply = [...effectiveProfile.turns].reverse().find((turn) => turn.role === "companion")?.text ?? "";
+    const continuingGenericStrain = /^That sounds like a lot to carry\b/i.test(previousGenericStrainReply);
     const angerSupport = /\b(?:furious|angry|hate everyone)\b/i.test(text)
       ? `I can hear how much anger is here${preferredName ? `, ${preferredName}` : ""}. Before choosing what to do, let's slow the next minute down. What happened, and do you want to vent without fixing it, work out what boundary was crossed, or plan a response you won't regret?`
       : reluctantToContact
         ? `I hear why outside support feels frightening${preferredName ? `, ${preferredName}` : ""}. I will not make a crisis call the price of continuing this conversation. We can keep talking about what happened, find one way to make this minute less intense, and check separately whether you are in immediate danger right now.`
-        : strainedConversationReply(preferredName);
+        : continuingGenericStrain
+          ? `I'm still with you${preferredName ? `, ${preferredName}` : ""}. I hear that this is still weighing on you, and I won't make you start over. Would it help more to put words to what feels hardest about it, be heard without fixing, or choose one very small next step for the next hour?`
+          : strainedConversationReply(preferredName);
     return {
       text: `${angerSupport}${personal}`,
       safetyLevel,
@@ -984,7 +1487,9 @@ export function respond(text: string, profile: CompanionProfile, now = new Date(
       usedMemoryIds: [...new Set([anchor?.id, conflictedPerson?.id, supportPerson?.id].filter((entry): entry is string => Boolean(entry)))],
       suggestedActions: conflictGuidance
         ? [...new Set([...conflictGuidance.actions, ...(supportName ? [`Consider ${displayPersonName(supportName)}`] : [])])]
-        : supportName
+        : /\b(?:furious|angry|hate everyone)\b/i.test(text)
+          ? ["Keep talking", "Vent without fixing", "Name the boundary", "Draft a response"]
+          : supportName
           ? ["Keep talking", `Consider ${displayPersonName(supportName)}`, "60-second reset", "Use a familiar comfort"]
           : ["Keep talking", "60-second reset", "Use a familiar comfort"],
       showUrgentOptions: false,

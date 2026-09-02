@@ -38,6 +38,10 @@ if ([string]::IsNullOrWhiteSpace($RunId)) {
 $verifiedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
 $windowsBuild = [Environment]::OSVersion.Version.Build
 $affectedWindowsBuild = $windowsBuild -ge 26200 -and $windowsBuild -le 26399
+$expectedElectronVersion = '43.4.1'
+$expectedElectronArchiveSha256 = 'C2EF9A5F65472C34D14BD3E67B7D14E66B0C01F124ABA45263D6A4232160E13A'
+$expectedOfficialElectronExecutableSha256 = 'E885FFC2A09DAB4C14DE706E3662A5929D1E65EA4EA347C56FD0964640EB923B'
+$electronArchivePath = Join-Path $releaseRoot "cache\electron-v$expectedElectronVersion-win32-x64.zip"
 
 function Assert-GeneratedPath {
     param([Parameter(Mandatory)] [string]$Base, [Parameter(Mandatory)] [string]$Candidate)
@@ -90,7 +94,7 @@ function Assert-FileRecords {
     }
 }
 
-foreach ($required in @($executablePath, $buildReceiptPath, $setupZip, $sidecarPath, $packageReceiptPath)) {
+foreach ($required in @($electronArchivePath, $executablePath, $buildReceiptPath, $setupZip, $sidecarPath, $packageReceiptPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required package artifact is missing: $required" }
 }
 
@@ -100,15 +104,70 @@ $signature = Get-AuthenticodeSignature -LiteralPath $executablePath
 $executableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $executablePath).Hash.ToUpperInvariant()
 if ($signature.Status.ToString() -ne [string]$buildReceipt.executableSignatureStatus -or $signature.Status -notin @('Valid', 'NotSigned')) { throw 'Executable signature state does not match its receipt.' }
 if ($executableHash -ne ([string]$buildReceipt.executableSha256).ToUpperInvariant()) { throw 'Executable hash does not match its receipt.' }
+$actualElectronArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $electronArchivePath).Hash.ToUpperInvariant()
+if ([string]$buildReceipt.electronVersion -ne $expectedElectronVersion -or
+    ([string]$buildReceipt.electronArchiveSha256).ToUpperInvariant() -ne $expectedElectronArchiveSha256 -or
+    $actualElectronArchiveHash -ne $expectedElectronArchiveSha256) {
+    throw 'The pinned official Electron release archive provenance is invalid.'
+}
+$releaseSecurity = $buildReceipt.releaseSecurity
+if (-not $releaseSecurity -or -not $releaseSecurity.officialElectronArchive -or -not $releaseSecurity.officialElectronHost -or -not $releaseSecurity.selectedRuntimeHost) {
+    throw 'The build receipt is missing the release-security provenance boundary.'
+}
+if (([string]$releaseSecurity.officialElectronArchive.sha256).ToUpperInvariant() -ne $expectedElectronArchiveSha256 -or
+    ([string]$releaseSecurity.officialElectronArchive.expectedSha256).ToUpperInvariant() -ne $expectedElectronArchiveSha256 -or
+    ([string]$releaseSecurity.officialElectronHost.sha256).ToUpperInvariant() -ne $expectedOfficialElectronExecutableSha256 -or
+    ([string]$releaseSecurity.officialElectronHost.expectedSha256).ToUpperInvariant() -ne $expectedOfficialElectronExecutableSha256 -or
+    [string]$releaseSecurity.officialElectronHost.authenticodeStatus -ne 'NotSigned') {
+    throw 'The official Electron host hash or upstream Authenticode state is invalid.'
+}
+$selectedRuntime = $releaseSecurity.selectedRuntimeHost
+if (-not [bool]$selectedRuntime.byteIdentityPreserved -or
+    [bool]$selectedRuntime.resourceMutationApplied -or
+    -not [bool]$selectedRuntime.fileRenameApplied -or
+    [bool]$selectedRuntime.renameChangedBytes -or
+    ([string]$selectedRuntime.sourceSha256).ToUpperInvariant() -ne $executableHash -or
+    ([string]$selectedRuntime.packagedSha256).ToUpperInvariant() -ne $executableHash -or
+    [string]$selectedRuntime.authenticodeStatus -ne $signature.Status.ToString() -or
+    [bool]$releaseSecurity.normalSecurityBypassUsed -or
+    [bool]$releaseSecurity.publicReleaseTrusted -or
+    [bool]$releaseSecurity.setupLauncherSeparatelySigned) {
+    throw 'The selected Electron runtime was not preserved byte-for-byte under the declared release-security boundary.'
+}
+if ([string]$selectedRuntime.source -eq 'official-electron-release-archive') {
+    if ($executableHash -ne $expectedOfficialElectronExecutableSha256 -or $signature.Status -ne 'NotSigned' -or [bool]$releaseSecurity.runtimeAuthenticodeValid) {
+        throw 'The packaged official Electron host does not match the pinned unsigned upstream bytes.'
+    }
+} elseif ([string]$selectedRuntime.source -eq 'caller-supplied-hash-and-signer-bound-publisher-runtime') {
+    if ($signature.Status -ne 'Valid' -or -not $signature.SignerCertificate -or -not [bool]$releaseSecurity.runtimeAuthenticodeValid -or
+        [string]::IsNullOrWhiteSpace([string]$selectedRuntime.expectedPublisherRuntimeSha256) -or
+        [string]::IsNullOrWhiteSpace([string]$selectedRuntime.expectedPublisherSignerThumbprint) -or
+        ([string]$selectedRuntime.expectedPublisherRuntimeSha256).ToUpperInvariant() -ne $executableHash -or
+        ([string]$selectedRuntime.expectedPublisherSignerThumbprint).ToUpperInvariant() -ne $signature.SignerCertificate.Thumbprint.ToUpperInvariant() -or
+        ([string]$selectedRuntime.signerThumbprint).ToUpperInvariant() -ne $signature.SignerCertificate.Thumbprint.ToUpperInvariant()) {
+        throw 'The publisher runtime is not bound to its declared exact hash and signer thumbprint.'
+    }
+} else {
+    throw 'The selected Electron runtime source is not recognized.'
+}
 Assert-FileRecords -Root (Join-Path $unpackedRoot 'resources\app') -Records @($buildReceipt.integrity.files) -ExcludedRelativePaths @()
 
 $packagedAppRoot = Join-Path $unpackedRoot 'resources\app'
 $packagedVoiceBridge = Join-Path $packagedAppRoot 'desktop\chatterbox-local-voice.cjs'
 $packagedVoiceHost = Join-Path $packagedAppRoot 'desktop\chatterbox-voice-host.py'
+$packagedVoiceProbe = Join-Path $packagedAppRoot 'desktop\packaged-voice-probe.cjs'
+$packagedSpeechBridge = Join-Path $packagedAppRoot 'desktop\local-speech.cjs'
+$packagedSpeechHost = Join-Path $packagedAppRoot 'desktop\local-speech-host.py'
+$packagedSpeechProbe = Join-Path $packagedAppRoot 'desktop\packaged-speech-probe.cjs'
 $packagedFemaleReference = Join-Path $packagedAppRoot 'web\voice-previews\calm-female-approved.wav'
 $packagedMaleReference = Join-Path $packagedAppRoot 'web\voice-previews\warm-male-approved.wav'
-foreach ($voiceAsset in @($packagedVoiceBridge, $packagedVoiceHost, $packagedFemaleReference, $packagedMaleReference)) {
+$forbiddenPackagedSprite = Join-Path $packagedAppRoot 'web\companion-warm-plum-speech-sprite-v3.png'
+$forbiddenPackagedSpriteMetadata = Join-Path $packagedAppRoot 'web\companion-warm-plum-speech-sprite-v3.json'
+foreach ($voiceAsset in @($packagedVoiceBridge, $packagedVoiceHost, $packagedVoiceProbe, $packagedSpeechBridge, $packagedSpeechHost, $packagedSpeechProbe, $packagedFemaleReference, $packagedMaleReference)) {
     if (-not (Test-Path -LiteralPath $voiceAsset -PathType Leaf)) { throw "The exact package is missing a bounded local-voice asset: $voiceAsset" }
+}
+if ((Test-Path -LiteralPath $forbiddenPackagedSprite) -or (Test-Path -LiteralPath $forbiddenPackagedSpriteMetadata)) {
+    throw 'The exact orb candidate still contains the forbidden companion sprite or frame metadata.'
 }
 $femaleReferenceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagedFemaleReference).Hash.ToLowerInvariant()
 $maleReferenceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagedMaleReference).Hash.ToLowerInvariant()
@@ -118,13 +177,48 @@ if ($femaleReferenceHash -ne 'c3e3682817476212c990969901028758fbbde1eb4eb8c97153
 }
 $packagedVoiceBridgeSource = Get-Content -Raw -LiteralPath $packagedVoiceBridge -Encoding UTF8
 $packagedVoiceHostSource = Get-Content -Raw -LiteralPath $packagedVoiceHost -Encoding UTF8
+$packagedVoiceProbeSource = Get-Content -Raw -LiteralPath $packagedVoiceProbe -Encoding UTF8
+$packagedSpeechBridgeSource = Get-Content -Raw -LiteralPath $packagedSpeechBridge -Encoding UTF8
+$packagedSpeechHostSource = Get-Content -Raw -LiteralPath $packagedSpeechHost -Encoding UTF8
+$packagedSpeechProbeSource = Get-Content -Raw -LiteralPath $packagedSpeechProbe -Encoding UTF8
 if ($packagedVoiceBridgeSource -notmatch "host: '127\.0\.0\.1'" -or
     $packagedVoiceBridgeSource -notmatch "shell: false" -or
     $packagedVoiceBridgeSource -notmatch "HF_HUB_OFFLINE: '1'" -or
     $packagedVoiceBridgeSource -notmatch "TRANSFORMERS_OFFLINE: '1'" -or
     $packagedVoiceHostSource -notmatch 'ThreadingHTTPServer\(\("127\.0\.0\.1", 0\)' -or
-    $packagedVoiceHostSource -notmatch 'WELLBEING_VOICE_AUTH_TOKEN') {
+    $packagedVoiceHostSource -notmatch 'WELLBEING_VOICE_AUTH_TOKEN' -or
+    $packagedVoiceHostSource -notmatch 'winsound\.SND_ASYNC' -or
+    $packagedVoiceHostSource -notmatch 'wellbeing\.local-voice\.cancel-result\.v1' -or
+    $packagedVoiceProbeSource -notmatch 'Exact checksum-verified setup ZIP payload' -or
+    $packagedVoiceProbeSource -notmatch 'playbackConfirmed: true' -or
+    $packagedVoiceProbeSource -notmatch 'actualPlaybackEventObserved: true' -or
+    $packagedVoiceProbeSource -notmatch 'cancellationAcknowledged: true' -or
+    $packagedVoiceProbeSource -notmatch "activePhase !== 'playing'") {
     throw 'The exact package local-voice host is missing its loopback, authentication, or offline-only boundary.'
+}
+$hostPlaybackStart = $packagedVoiceHostSource.IndexOf('duration_seconds =', [StringComparison]::Ordinal)
+$hostPlaybackEnd = $packagedVoiceHostSource.IndexOf('deadline =', $hostPlaybackStart, [StringComparison]::Ordinal)
+if ($hostPlaybackStart -lt 0 -or $hostPlaybackEnd -le $hostPlaybackStart) {
+    throw 'The exact package local-voice host is missing its bounded playback lifecycle.'
+}
+$hostPlaybackLifecycle = $packagedVoiceHostSource.Substring($hostPlaybackStart, $hostPlaybackEnd - $hostPlaybackStart)
+$hostPlaybackCall = $hostPlaybackLifecycle.IndexOf('winsound.PlaySound(', [StringComparison]::Ordinal)
+$hostCancellationRecheck = $hostPlaybackLifecycle.IndexOf('if request_generation != self.generation():', $hostPlaybackCall, [StringComparison]::Ordinal)
+$hostTimingNotification = $hostPlaybackLifecycle.IndexOf('print(PLAYBACK_PREFIX', $hostCancellationRecheck, [StringComparison]::Ordinal)
+if ($hostPlaybackCall -lt 0 -or $hostCancellationRecheck -le $hostPlaybackCall -or $hostTimingNotification -le $hostCancellationRecheck) {
+    throw 'The exact package local-voice host announces mouth timing before Windows accepts playback or before cancellation is rechecked.'
+}
+if ($packagedSpeechBridgeSource -notmatch "host: '127\.0\.0\.1'" -or
+    $packagedSpeechBridgeSource -notmatch "shell: false" -or
+    $packagedSpeechBridgeSource -notmatch "HF_HUB_OFFLINE: '1'" -or
+    $packagedSpeechBridgeSource -notmatch "TRANSFORMERS_OFFLINE: '1'" -or
+    $packagedSpeechHostSource -notmatch 'ThreadingHTTPServer\(\("127\.0\.0\.1", 0\)' -or
+    $packagedSpeechHostSource -notmatch 'WELLBEING_ASR_AUTH_TOKEN' -or
+    $packagedSpeechHostSource -notmatch 'io\.BytesIO\(audio\)' -or
+    $packagedSpeechHostSource -notmatch 'rawAudioPersisted": False' -or
+    $packagedSpeechProbeSource -notmatch 'fixedSyntheticPackagedAudioOnly: true' -or
+    $packagedSpeechProbeSource -notmatch 'transcriptTextRetainedInReceipt: false') {
+    throw 'The exact package local-speech host is missing its loopback, bearer-authenticated, memory-only, or offline-cache boundary.'
 }
 $bundledModelFiles = @(Get-ChildItem -LiteralPath $packagedAppRoot -File -Recurse | Where-Object {
     $_.Name -in @('conds.pt', 's3gen.safetensors', 't3_cfg.safetensors', 've.safetensors')
@@ -133,6 +227,9 @@ if ($bundledModelFiles.Count -ne 0) { throw 'The exact package unexpectedly bund
 $localVoiceProviderAssets = [ordered]@{
     adapterPath = 'resources/app/desktop/chatterbox-local-voice.cjs'
     hostPath = 'resources/app/desktop/chatterbox-voice-host.py'
+    ownerProbePath = 'resources/app/desktop/packaged-voice-probe.cjs'
+    exactPackageAudibleProbeAvailable = $true
+    muteCancellationProbeAvailable = $true
     loopbackOnly = $true
     perProcessAuthenticationRequired = $true
     offlineEnvironmentRequired = $true
@@ -142,8 +239,21 @@ $localVoiceProviderAssets = [ordered]@{
         [ordered]@{ profile = 'calm-masculine'; path = 'resources/app/web/voice-previews/warm-male-approved.wav'; sha256 = $maleReferenceHash.ToUpperInvariant() }
     )
 }
+$localSpeechProviderAssets = [ordered]@{
+    adapterPath = 'resources/app/desktop/local-speech.cjs'
+    hostPath = 'resources/app/desktop/local-speech-host.py'
+    fixedSyntheticProbePath = 'resources/app/desktop/packaged-speech-probe.cjs'
+    exactPackageTranscriptionProbeAvailable = $true
+    loopbackOnly = $true
+    perProcessAuthenticationRequired = $true
+    offlineCacheRequired = $true
+    rawAudioPersisted = $false
+    modelBundled = $false
+    fixedSyntheticAudio = [ordered]@{ path = 'resources/app/web/voice-previews/calm-female-approved.wav'; sha256 = $femaleReferenceHash.ToUpperInvariant() }
+}
 
-$webFiles = Get-ChildItem -LiteralPath (Join-Path $unpackedRoot 'resources\app\web') -File -Recurse
+$packagedWebRoot = Join-Path $unpackedRoot 'resources\app\web'
+$webFiles = Get-ChildItem -LiteralPath $packagedWebRoot -File -Recurse
 foreach ($file in $webFiles) {
     if ($file.Extension -in @('.js', '.css', '.html')) {
         $content = Get-Content -Raw -LiteralPath $file.FullName
@@ -151,6 +261,65 @@ foreach ($file in $webFiles) {
             throw "The packaged offline UI contains an automatic external asset URL: $($file.FullName)"
         }
     }
+}
+$manifestPath = Join-Path $packagedWebRoot 'manifest.webmanifest'
+$serviceWorkerPath = Join-Path $packagedWebRoot 'sw.js'
+$pwaIconPaths = @(
+    (Join-Path $packagedWebRoot 'pwa\icon-180.png'),
+    (Join-Path $packagedWebRoot 'pwa\icon-192.png'),
+    (Join-Path $packagedWebRoot 'pwa\icon-512.png'),
+    (Join-Path $packagedWebRoot 'pwa\icon-maskable-512.png')
+)
+foreach ($pwaFile in @($manifestPath, $serviceWorkerPath) + $pwaIconPaths) {
+    if (-not (Test-Path -LiteralPath $pwaFile -PathType Leaf)) { throw "The exact package is missing an installable-PWA asset: $pwaFile" }
+}
+$manifest = Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json
+if ($manifest.id -ne '/' -or $manifest.scope -ne '/' -or $manifest.start_url -ne '/?layout=full&pwa=1' -or $manifest.display -ne 'standalone' -or
+    @($manifest.icons | Where-Object { $_.src -eq '/pwa/icon-512.png' -and $_.sizes -eq '512x512' -and $_.purpose -eq 'any' }).Count -ne 1 -or
+    @($manifest.icons | Where-Object { $_.src -eq '/pwa/icon-maskable-512.png' -and $_.sizes -eq '512x512' -and $_.purpose -eq 'maskable' }).Count -ne 1) {
+    throw 'The exact package PWA manifest is not the reviewed standalone application contract.'
+}
+$serviceWorkerSource = Get-Content -Raw -LiteralPath $serviceWorkerPath -Encoding UTF8
+$precacheMatch = [regex]::Match($serviceWorkerSource, 'const PRECACHE_URLS = Object\.freeze\((\[[\s\S]*?\])\);')
+if (-not $precacheMatch.Success) { throw 'The exact package service worker does not expose its exact precache closure.' }
+$precacheValue = $precacheMatch.Groups[1].Value | ConvertFrom-Json
+$precacheUrls = @()
+foreach ($precacheUrl in $precacheValue) { $precacheUrls += [string]$precacheUrl }
+if ($precacheUrls.Count -ne (@($precacheUrls | Select-Object -Unique)).Count -or
+    $serviceWorkerSource -notmatch 'CACHE_PREFIX = "wellbeing-companion-shell-"' -or
+    $serviceWorkerSource -notmatch 'NETWORK_ONLY_PREFIXES' -or
+    $serviceWorkerSource -notmatch 'cache\.match\(request, \{ ignoreSearch: true \}\)') {
+    throw 'The exact package service worker is missing its versioned, network-only, or cache-first static boundary.'
+}
+foreach ($webFile in $webFiles) {
+    $relativeWebPath = $webFile.FullName.Substring(([IO.Path]::GetFullPath($packagedWebRoot).TrimEnd('\')).Length + 1).Replace('\', '/')
+    if ($relativeWebPath -eq 'sw.js' -or $relativeWebPath.EndsWith('.map', [StringComparison]::OrdinalIgnoreCase)) { continue }
+    if ($precacheUrls -notcontains "/$relativeWebPath") { throw "The exact package service worker omits an emitted build asset: $relativeWebPath" }
+}
+$packagedBundles = @(Get-ChildItem -LiteralPath (Join-Path $packagedWebRoot 'assets') -File | Where-Object { $_.Extension -in @('.js', '.css') })
+if (@($packagedBundles | Where-Object Extension -eq '.js').Count -lt 1 -or @($packagedBundles | Where-Object Extension -eq '.css').Count -lt 1) {
+    throw 'The exact package is missing its hashed JavaScript or CSS application bundle.'
+}
+$packagedJavaScript = ($packagedBundles | Where-Object Extension -eq '.js' | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName -Encoding UTF8 }) -join "`n"
+if ($packagedJavaScript -notmatch 'beforeinstallprompt' -or
+    $packagedJavaScript -notmatch 'Install in its own app window' -or
+    $packagedJavaScript -notmatch 'wellbeing:pwa-offline-ready' -or
+    $packagedJavaScript -notmatch 'reactive-css-orb-2d' -or
+    $packagedJavaScript -notmatch 'sanitized-playback-amplitude-envelope' -or
+    $packagedJavaScript -notmatch 'fail-temporary-orb-no-live-mesh') {
+    throw 'The exact packaged client is missing the reviewed PWA install control or honest temporary-orb contract.'
+}
+$pwaInstallabilityEvidence = [ordered]@{
+    manifestPath = 'resources/app/web/manifest.webmanifest'
+    serviceWorkerPath = 'resources/app/web/sw.js'
+    standalone = $true
+    startUrl = '/?layout=full&pwa=1'
+    exactPrecacheUrlCount = $precacheUrls.Count
+    emittedBuildClosureComplete = $true
+    hashedJavaScript = @($packagedBundles | Where-Object Extension -eq '.js' | ForEach-Object { "resources/app/web/assets/$($_.Name)" })
+    hashedCss = @($packagedBundles | Where-Object Extension -eq '.css' | ForEach-Object { "resources/app/web/assets/$($_.Name)" })
+    installControlPresent = $true
+    nativeBridgePreserved = $true
 }
 
 $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupZip).Hash.ToUpperInvariant()
@@ -194,6 +363,26 @@ try {
     if ($launcherItem.Length -lt 5000) { throw 'The compiled setup launcher is unexpectedly small.' }
     $launcherHeader = [IO.File]::ReadAllBytes($setupLauncherPath)
     if ($launcherHeader.Length -lt 2 -or $launcherHeader[0] -ne 0x4d -or $launcherHeader[1] -ne 0x5a) { throw 'The setup launcher is not a Windows PE executable.' }
+    $launcherHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupLauncherPath).Hash.ToUpperInvariant()
+    $launcherSignature = Get-AuthenticodeSignature -LiteralPath $setupLauncherPath
+    if ($launcherSignature.Status -notin @('Valid', 'NotSigned')) { throw 'The setup launcher has an unexpected Authenticode state.' }
+    $setupReleaseSecurity = $setupReceipt.releaseSecurity
+    $packageReleaseSecurity = $packageReceipt.releaseSecurity
+    if (-not $setupReleaseSecurity -or -not $packageReleaseSecurity -or
+        ([string]$setupReleaseSecurity.runtimeSha256).ToUpperInvariant() -ne $executableHash -or
+        [string]$setupReleaseSecurity.runtimeSignatureStatus -ne $signature.Status.ToString() -or
+        -not [bool]$setupReleaseSecurity.runtimeByteIdentityPreserved -or
+        [bool]$setupReleaseSecurity.runtimeResourceMutationApplied -or
+        ([string]$setupReleaseSecurity.setupLauncherSha256).ToUpperInvariant() -ne $launcherHash -or
+        [string]$setupReleaseSecurity.setupLauncherSignatureStatus -ne $launcherSignature.Status.ToString() -or
+        [bool]$setupReleaseSecurity.normalSecurityBypassUsed -or
+        [string]$packageReleaseSecurity.runtimeSignatureStatus -ne $signature.Status.ToString() -or
+        -not [bool]$packageReleaseSecurity.runtimeByteIdentityPreserved -or
+        [string]$packageReleaseSecurity.setupLauncherSignatureStatus -ne $launcherSignature.Status.ToString() -or
+        [bool]$packageReleaseSecurity.normalSecurityBypassUsed -or
+        [bool]$packageReleaseSecurity.publicReleaseTrusted -ne [bool]($signature.Status -eq 'Valid' -and $launcherSignature.Status -eq 'Valid')) {
+        throw 'The setup and package release-security receipts do not match the exact runtime and launcher.'
+    }
     $verifyOnlyResult = @(& $supportInstallerPath -VerifyOnly -AcceptVerifiedUnsignedRuntime)
     if ($verifyOnlyResult.Count -ne 1 -or $verifyOnlyResult[0].Status -ne 'VerifiedOnly' -or $verifyOnlyResult[0].RealUserProfileMutated) {
         throw 'The setup installer did not complete its no-mutation verification-only path.'
@@ -247,8 +436,8 @@ if (-not $runtimeWarmup.ok -or $runtimeWarmup.status -ne 200 -or $runtimeWarmup.
 $initialNavigation = $smoke.initialNavigationEvidence
 if ([int]$initialNavigation.attempts -lt 1 -or [int]$initialNavigation.attempts -gt 25 -or [int]$initialNavigation.retries -ne ([int]$initialNavigation.attempts - 1) -or [int]$initialNavigation.retryDelayMs -ne 250 -or $initialNavigation.exhausted) { throw 'The bounded initial-navigation evidence is invalid.' }
 if ($smoke.rendererProbe.requireType -ne 'undefined' -or $smoke.rendererProbe.processType -ne 'undefined' -or $smoke.rendererProbe.localStorageRoundTrip -ne 'round-trip-ok' -or -not $smoke.rendererProbe.workingTitlePresent) { throw 'The isolated renderer or local-storage evidence is invalid.' }
-$companion3d = $smoke.rendererProbe.companion3d
-if (-not $companion3d.canvasPresent -or $companion3d.renderer -ne 'webgl-3d-motion' -or $companion3d.model -ne 'procedural-articulated-3d' -or $companion3d.depthTest -ne 'enabled' -or $companion3d.hierarchy -ne 'head-parented-world-matrices' -or $companion3d.rendererLifecycle -ne 'mount-only-live-motion-ref' -or [int]$companion3d.motionTick -lt 15 -or -not $companion3d.waving -or -not $companion3d.movementObserved) { throw 'The packaged procedural 3D renderer did not prove a live articulated wave.' }
+$companionVisual = $smoke.rendererProbe.companionVisual
+if (-not $companionVisual.orbPresent -or $companionVisual.renderer -ne 'reactive-css-orb-2d' -or $companionVisual.presentation -ne 'temporary-orb-not-3d-character' -or $companionVisual.visualKind -ne 'temporary-orb-2d' -or $companionVisual.imageSwapPath -ne 'none' -or $companionVisual.spriteFrameSwap -ne 'false' -or $companionVisual.speechTiming -ne 'sanitized-playback-amplitude-envelope' -or $companionVisual.motionMode -ne 'smooth-state-transitions-plus-voice-reactive-core' -or $companionVisual.voiceReactiveCore -ne 'sanitized-playback-energy-only' -or $companionVisual.stableCenter -ne 'true' -or $companionVisual.rawAudioAccess -ne 'none' -or $companionVisual.true3dAcceptance -ne 'fail-temporary-orb-no-live-mesh' -or $companionVisual.webglScene -ne 'false' -or [int]$companionVisual.liveMeshCount -ne 0 -or [int]$companionVisual.meshRenderCalls -ne 0 -or [int]$companionVisual.motionTick -lt 15 -or $companionVisual.oldSpritePathMounted -or -not $companionVisual.accessibleStatus -or -not $companionVisual.runtimeObserved) { throw 'The packaged temporary orb did not prove stable runtime state, voice-reactive-core evidence, accessible status, sprite-path exclusion, and an explicit failing true-3D gate.' }
 $textRecovery = $smoke.rendererProbe.handsFreeTextRecovery
 $expectedTypedReply = "I won't label or diagnose you from a conversation. I can help you describe what you have noticed${emDash}when it started, what makes it better or worse, sleep, energy, and how it affects daily life${emDash}so you have a clearer record for a qualified clinician if you choose to speak with one."
 $textRecoveryChecks = [ordered]@{
@@ -315,19 +504,40 @@ $verification = [ordered]@{
     runId = $RunId
     verifiedAtUtc = $verifiedAtUtc
     algorithm = 'SHA-256'
-    scope = 'Exact executable, authored resources, setup ZIP/sidecar/receipts, and one bounded actual packaged-process smoke.'
+    scope = 'Exact executable and upstream Electron provenance, Authenticode states, authored resources, setup ZIP/sidecar/receipts, and one bounded actual packaged-process smoke.'
     exclusions = @(
         'This verification receipt excludes itself to avoid self-hash recursion. configuredSecurity records requested settings rather than independently proving Chromium internals.',
         'Windows builds 26200-26399 use a disclosed Electron child-process compatibility boundary: GPU and renderer process sandboxes are disabled while context isolation remains enabled, Node integration and webviews remain disabled, navigation remains fixed to 127.0.0.1, and external renderer requests remain blocked.'
     )
     artifacts = [ordered]@{
-        executable = [ordered]@{ path = 'release/win-unpacked/WellbeingCompanionWorkingTitle.exe'; bytes = [long](Get-Item -LiteralPath $executablePath).Length; sha256 = $executableHash; signatureStatus = $signature.Status.ToString() }
+        executable = [ordered]@{ path = 'release/win-unpacked/WellbeingCompanionWorkingTitle.exe'; bytes = [long](Get-Item -LiteralPath $executablePath).Length; sha256 = $executableHash; signatureStatus = $signature.Status.ToString(); signerSubject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }; signerThumbprint = if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { $null } }
         buildReceipt = [ordered]@{ path = 'release/win-unpacked/BUILD-RECEIPT.json'; bytes = [long](Get-Item -LiteralPath $buildReceiptPath).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $buildReceiptPath).Hash.ToUpperInvariant() }
         setupZip = [ordered]@{ path = "release/$([IO.Path]::GetFileName($setupZip))"; bytes = [long](Get-Item -LiteralPath $setupZip).Length; sha256 = $setupHash }
         setupSidecar = [ordered]@{ path = "release/$([IO.Path]::GetFileName($sidecarPath))"; bytes = [long](Get-Item -LiteralPath $sidecarPath).Length; sha256 = $sidecarHash }
         packageReceipt = [ordered]@{ path = "release/$([IO.Path]::GetFileName($packageReceiptPath))"; bytes = [long](Get-Item -LiteralPath $packageReceiptPath).Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packageReceiptPath).Hash.ToUpperInvariant() }
         smokeReceipt = [ordered]@{ path = 'wellbeing-companion-desktop.smoke.json'; bytes = [long](Get-Item -LiteralPath $smokePath).Length; sha256 = $smokeHash }
-        setupLauncher = [ordered]@{ path = "setup/SETUP-WELLBEING-COMPANION.exe"; bytes = [long]$launcherItem.Length; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupLauncherPath).Hash.ToUpperInvariant(); signatureStatus = (Get-AuthenticodeSignature -LiteralPath $setupLauncherPath).Status.ToString() }
+        setupLauncher = [ordered]@{ path = "setup/SETUP-WELLBEING-COMPANION.exe"; bytes = [long]$launcherItem.Length; sha256 = $launcherHash; signatureStatus = $launcherSignature.Status.ToString(); signerSubject = if ($launcherSignature.SignerCertificate) { $launcherSignature.SignerCertificate.Subject } else { $null }; signerThumbprint = if ($launcherSignature.SignerCertificate) { $launcherSignature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { $null } }
+    }
+    releaseSecurityEvidence = [ordered]@{
+        officialElectronVersion = $expectedElectronVersion
+        officialElectronArchiveSha256 = $actualElectronArchiveHash
+        officialElectronExecutableSha256 = $expectedOfficialElectronExecutableSha256
+        officialElectronExecutableSignatureStatus = [string]$releaseSecurity.officialElectronHost.authenticodeStatus
+        selectedRuntimeSource = [string]$selectedRuntime.source
+        runtimeSha256 = $executableHash
+        runtimeSignatureStatus = $signature.Status.ToString()
+        runtimeSignerSubject = if ($signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { $null }
+        runtimeSignerThumbprint = if ($signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { $null }
+        runtimeByteIdentityPreserved = [bool]$selectedRuntime.byteIdentityPreserved
+        resourceMutationApplied = [bool]$selectedRuntime.resourceMutationApplied
+        fileRenameApplied = [bool]$selectedRuntime.fileRenameApplied
+        renameChangedBytes = [bool]$selectedRuntime.renameChangedBytes
+        setupLauncherSha256 = $launcherHash
+        setupLauncherSignatureStatus = $launcherSignature.Status.ToString()
+        setupLauncherSignerSubject = if ($launcherSignature.SignerCertificate) { $launcherSignature.SignerCertificate.Subject } else { $null }
+        normalSecurityBypassUsed = $false
+        publicReleaseTrusted = [bool]($signature.Status -eq 'Valid' -and $launcherSignature.Status -eq 'Valid')
+        publicReleaseHoldReason = if ($signature.Status -eq 'Valid' -and $launcherSignature.Status -eq 'Valid') { $null } else { 'The exact runtime and setup launcher do not both have valid publisher Authenticode chains. Microsoft Store signing of an accepted MSIX or an external publisher signing identity is required for normal public distribution.' }
     }
     setupLauncherEvidence = [ordered]@{
         doubleClickExecutablePresent = $true
@@ -338,6 +548,9 @@ $verification = [ordered]@{
         extractionRootCharacters = [int]$extractRoot.Length
     }
     localVoiceProviderAssets = $localVoiceProviderAssets
+    localSpeechProviderAssets = $localSpeechProviderAssets
+    pwaInstallability = $pwaInstallabilityEvidence
+    temporaryOrbVisual = [ordered]@{ renderer = 'reactive-css-orb-2d'; presentation = 'temporary-orb-not-3d-character'; spriteAssetPackaged = $false; imageSwapPath = 'none'; true3dAcceptance = 'FAIL'; true3dReason = 'No live WebGL mesh or licensed owner GLB is present in this orb candidate.' }
     smokeEvidence = [ordered]@{
         actualProcessStarted = $true
         executionSource = 'Exact executable extracted from the checksum-verified setup ZIP into a temporary normal-ACL root; the installer was not executed.'
@@ -365,6 +578,13 @@ if (Test-Path -LiteralPath $extractRoot) { Remove-Item -LiteralPath $extractRoot
 [pscustomobject]@{
     Executable = $executablePath
     SignatureStatus = $signature.Status
+    RuntimeSource = [string]$selectedRuntime.source
+    RuntimeByteIdentityPreserved = [bool]$selectedRuntime.byteIdentityPreserved
+    RuntimeResourceMutationApplied = [bool]$selectedRuntime.resourceMutationApplied
+    OfficialElectronHostSignatureStatus = [string]$releaseSecurity.officialElectronHost.authenticodeStatus
+    SetupLauncherSignatureStatus = $launcherSignature.Status
+    PublicReleaseTrusted = [bool]($signature.Status -eq 'Valid' -and $launcherSignature.Status -eq 'Valid')
+    NormalSecurityBypassUsed = $false
     SetupZip = $setupZip
     SetupZipSha256 = $setupHash
     SmokeStatus = $smoke.status
@@ -373,6 +593,7 @@ if (Test-Path -LiteralPath $extractRoot) { Remove-Item -LiteralPath $extractRoot
     RendererLoaded = $smoke.rendererLoaded
     OfflineRuntime = $smoke.bundledRuntimeEvidence
     PermissionBoundary = $smoke.permissionBoundary
+    PwaInstallability = $pwaInstallabilityEvidence
     SmokeExecutionSource = 'checksum-verified extracted setup payload'
     VerificationReceipt = $verificationPath
     RunId = $RunId

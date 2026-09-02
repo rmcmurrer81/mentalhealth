@@ -12,6 +12,7 @@
   "scripts": {
     "dev": "vite --config vite.config.ts --host 127.0.0.1",
     "build": "tsc -b && vite build --config vite.config.ts",
+    "benchmark:conversation": "vitest run --config evaluation/vitest.conversation.config.ts --reporter=verbose",
     "test": "vitest run --config vite.config.ts",
     "test:watch": "vitest --config vite.config.ts"
   },

@@ -18,6 +18,7 @@ import signal
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 import winsound
@@ -25,6 +26,9 @@ import winsound
 CATALOG_SCHEMA = "wellbeing.chatterbox.host-ready.v1"
 REQUEST_SCHEMA = "wellbeing.local-voice.provider-request.v1"
 RESULT_SCHEMA = "wellbeing.local-voice.provider-result.v1"
+CANCEL_RESULT_SCHEMA = "wellbeing.local-voice.cancel-result.v1"
+PLAYBACK_SCHEMA = "wellbeing.local-voice.playback-start.v1"
+PLAYBACK_PREFIX = "WELLBEING_VOICE_PLAYBACK "
 MAX_REQUEST_BYTES = 2_048
 MAX_TEXT_CHARS = 220
 PROFILE_CONFIG = {
@@ -45,6 +49,61 @@ PROFILE_CONFIG = {
         "temperature": 0.68,
     },
 }
+
+
+def text_viseme(character: str) -> str:
+    lowered = character.lower()
+    if lowered in "mbp":
+        return "lip-contact"
+    if lowered in "ouwq":
+        return "rounded"
+    if lowered in "eiyszx":
+        return "wide"
+    if lowered.isalpha() or lowered.isdigit():
+        return "jaw-open"
+    return "rest"
+
+
+def playback_timing(request_id: str, text: str, samples, sample_rate: int) -> dict[str, object]:
+    """Return privacy-minimized, waveform-aligned animation timing.
+
+    Amplitude levels are measured from the generated waveform. Mouth classes
+    are text-class heuristics distributed across that exact waveform duration;
+    this deliberately does not claim forced phoneme alignment.
+    """
+    import numpy as np  # type: ignore
+
+    flattened = np.asarray(samples, dtype=np.float32).reshape(-1)
+    duration_ms = max(100, int(round(len(flattened) * 1000 / sample_rate)))
+    window_samples = max(1, int(sample_rate * 0.08))
+    rms_values = [
+        float(np.sqrt(np.mean(np.square(flattened[start:start + window_samples], dtype=np.float64))))
+        for start in range(0, len(flattened), window_samples)
+    ][:500]
+    peak_rms = max(rms_values or [1.0]) or 1.0
+    amplitudes = [
+        {"startMs": index * 80, "level": round(min(1.0, value / peak_rms), 3)}
+        for index, value in enumerate(rms_values)
+    ]
+    characters = [character for character in text if not character.isspace()] or ["."]
+    unit = duration_ms / len(characters)
+    cues: list[dict[str, object]] = []
+    for index, character in enumerate(characters):
+        start_ms = int(round(index * unit))
+        end_ms = duration_ms if index == len(characters) - 1 else max(start_ms + 1, int(round((index + 1) * unit)))
+        viseme = text_viseme(character)
+        if cues and cues[-1]["viseme"] == viseme and cues[-1]["endMs"] == start_ms:
+            cues[-1]["endMs"] = end_ms
+        else:
+            cues.append({"startMs": start_ms, "endMs": end_ms, "viseme": viseme})
+    return {
+        "schema": PLAYBACK_SCHEMA,
+        "requestId": request_id,
+        "durationMs": duration_ms,
+        "timingBasis": "generated-waveform-amplitude-plus-text-class-heuristic",
+        "amplitudeFrames": amplitudes,
+        "visemeCues": cues,
+    }
 
 
 def exact_sha256(path: Path) -> str:
@@ -100,50 +159,110 @@ class VoiceState:
         self.runtime_root = runtime_root
         self.generate_lock = threading.Lock()
         self.cancel_lock = threading.Lock()
+        self.phase_lock = threading.Lock()
         self.cancel_generation = 0
+        self.active_request_id: str | None = None
+        self.active_phase = "idle"
 
-    def cancel(self) -> None:
+    @staticmethod
+    def stop_playback() -> bool:
+        # SND_PURGE is not implemented consistently on current Windows builds.
+        # Passing None with zero flags is the documented general stop path, so
+        # try both and treat either successful call as a completed stop request.
+        for flags in (getattr(winsound, "SND_PURGE", 0), 0):
+            try:
+                winsound.PlaySound(None, flags)
+                return True
+            except (RuntimeError, OSError):
+                continue
+        return False
+
+    def set_phase(self, request_id: str, phase: str) -> None:
+        with self.phase_lock:
+            self.active_request_id = request_id
+            self.active_phase = phase
+
+    def clear_phase(self, request_id: str) -> None:
+        with self.phase_lock:
+            if self.active_request_id == request_id:
+                self.active_request_id = None
+                self.active_phase = "idle"
+
+    def cancel(self, request_id: str) -> tuple[bool, str]:
+        with self.phase_lock:
+            if self.active_request_id != request_id:
+                return False, "idle"
+            phase = self.active_phase
         with self.cancel_lock:
             self.cancel_generation += 1
-        try:
-            winsound.PlaySound(None, winsound.SND_PURGE)
-        except RuntimeError:
-            pass
+        self.stop_playback()
+        return True, phase
+
+    def cancel_all(self) -> None:
+        with self.cancel_lock:
+            self.cancel_generation += 1
+        self.stop_playback()
 
     def generation(self) -> int:
         with self.cancel_lock:
             return self.cancel_generation
 
     def speak(self, payload: dict[str, object]) -> bool:
+        request_id = payload["requestId"]
         profile = payload["profile"]
         config = PROFILE_CONFIG[profile]
         request_generation = self.generation()
-        with self.generate_lock:
-            if request_generation != self.generation():
-                return False
-            self.model.conds = self.conditions[profile]
-            waveform = self.model.generate(
-                payload["text"],
-                audio_prompt_path=None,
-                exaggeration=config["exaggeration"],
-                cfg_weight=config["cfg_weight"],
-                temperature=config["temperature"],
-            )
-            if request_generation != self.generation():
-                return False
-            import soundfile as sf  # type: ignore
-
-            descriptor, output_name = tempfile.mkstemp(prefix="wellbeing-voice-", suffix=".wav", dir=self.runtime_root)
-            os.close(descriptor)
-            output = Path(output_name)
-            try:
-                sf.write(output, waveform.squeeze(0).detach().cpu().numpy(), self.model.sr)
+        self.set_phase(request_id, "generating")
+        try:
+            with self.generate_lock:
                 if request_generation != self.generation():
                     return False
-                winsound.PlaySound(str(output), winsound.SND_FILENAME)
-                return request_generation == self.generation()
-            finally:
-                output.unlink(missing_ok=True)
+                self.model.conds = self.conditions[profile]
+                waveform = self.model.generate(
+                    payload["text"],
+                    audio_prompt_path=None,
+                    exaggeration=config["exaggeration"],
+                    cfg_weight=config["cfg_weight"],
+                    temperature=config["temperature"],
+                )
+                if request_generation != self.generation():
+                    return False
+                import soundfile as sf  # type: ignore
+
+                descriptor, output_name = tempfile.mkstemp(prefix="wellbeing-voice-", suffix=".wav", dir=self.runtime_root)
+                os.close(descriptor)
+                output = Path(output_name)
+                try:
+                    samples = waveform.squeeze(0).detach().cpu().numpy()
+                    sf.write(output, samples, self.model.sr)
+                    if request_generation != self.generation():
+                        return False
+                    duration_seconds = max(0.1, float(samples.shape[-1]) / float(self.model.sr))
+                    self.set_phase(request_id, "playing")
+                    winsound.PlaySound(
+                        str(output),
+                        winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
+                    )
+                    if request_generation != self.generation():
+                        self.stop_playback()
+                        return False
+                    print(PLAYBACK_PREFIX + json.dumps(
+                        playback_timing(request_id, str(payload["text"]), samples, int(self.model.sr)),
+                        separators=(",", ":"),
+                    ), flush=True)
+                    deadline = time.monotonic() + duration_seconds + 0.15
+                    while time.monotonic() < deadline:
+                        if request_generation != self.generation():
+                            self.stop_playback()
+                            return False
+                        time.sleep(0.025)
+                    self.stop_playback()
+                    return request_generation == self.generation()
+                finally:
+                    self.stop_playback()
+                    output.unlink(missing_ok=True)
+        finally:
+            self.clear_phase(request_id)
 
 
 def clean_text(value: object) -> str:
@@ -237,8 +356,17 @@ def make_handler(auth_token: str, state: VoiceState):
                 if not isinstance(value, dict) or set(value) != {"requestId"}:
                     self.send_json(400, {"status": "invalid-request"})
                     return
-                state.cancel()
-                self.send_json(200, {"status": "cancelled"})
+                request_id = value["requestId"]
+                if not isinstance(request_id, str) or not request_id or len(request_id) > 64 or not all(character.isalnum() or character in "_-" for character in request_id):
+                    self.send_json(400, {"status": "invalid-request"})
+                    return
+                accepted, active_phase = state.cancel(request_id)
+                self.send_json(200, {
+                    "schema": CANCEL_RESULT_SCHEMA,
+                    "requestId": request_id,
+                    "status": "cancelled" if accepted else "not-active",
+                    "activePhase": active_phase,
+                })
                 return
             if route != "/speak":
                 self.send_json(404, {"status": "not-found"})
@@ -281,7 +409,7 @@ def main() -> int:
     }, separators=(",", ":")), flush=True)
 
     def stop_server(_signal=None, _frame=None):
-        state.cancel()
+        state.cancel_all()
         threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGTERM, stop_server)
@@ -290,7 +418,7 @@ def main() -> int:
         server.serve_forever(poll_interval=0.25)
     finally:
         server.server_close()
-        state.cancel()
+        state.cancel_all()
         for candidate in runtime_root.glob("wellbeing-voice-*.wav"):
             candidate.unlink(missing_ok=True)
     return 0

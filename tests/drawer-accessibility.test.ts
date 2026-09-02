@@ -17,8 +17,9 @@ describe("drawer keyboard accessibility wiring", () => {
     expect(appSource).toContain("if (returnTarget?.isConnected) returnTarget.focus()");
     expect(appSource).toContain("else talkButtonRef.current?.focus()");
     expect(appSource).toContain("drawerReturnFocusRef.current = null");
-    expect(appSource).not.toContain("requestAnimationFrame");
-    expect(appSource).not.toContain("cancelAnimationFrame");
+    const drawerFocusWiring = appSource.slice(captureEffect, appSource.indexOf("useEffect(() => () => {", initialFocusEffect));
+    expect(drawerFocusWiring).not.toContain("requestAnimationFrame");
+    expect(drawerFocusWiring).not.toContain("cancelAnimationFrame");
     expect(appSource).toContain("if (locked) unlockPasswordInputRef.current?.focus()");
     expect(appSource).toContain("else if (lockStateWasLockedRef.current) talkButtonRef.current?.focus()");
     expect(appSource).toContain("ref={unlockPasswordInputRef}");
@@ -34,9 +35,11 @@ describe("drawer keyboard accessibility wiring", () => {
     expect(appSource.match(/onKeyDown=\{handleDrawerKeyDown\}/g)).toHaveLength(3);
   });
 
-  it("does not overstate the speech-service or offline privacy boundary", () => {
+  it("states the installed local speech and Windows permission boundary without stale vendor-service copy", () => {
     expect(appSource).toContain("Typed conversation and saved memories stay in this device profile.");
-    expect(appSource).toContain("Hands-free recognition may use your browser or operating-system speech service");
+    expect(appSource).toContain("each hands-free turn is transcribed locally from memory and discarded after use");
+    expect(appSource).toContain("Windows still controls microphone permission");
+    expect(appSource).not.toContain("Hands-free recognition may use your browser or operating-system speech service");
     expect(appSource).toContain("Core works offline");
     expect(appSource).not.toContain("Conversation and memories stay on this device");
   });

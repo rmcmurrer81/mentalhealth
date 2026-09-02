@@ -40,6 +40,17 @@ export interface WellbeingDesktopBridge {
   requestHandsFreePermission(): Promise<boolean>;
   armMicrophone(): Promise<boolean>;
   disarmMicrophone(): void;
+  localSpeech?: {
+    status(): Promise<{ ready: boolean; localOnly: true; cacheOnly: true; rawAudioPersisted: false }>;
+    transcribe(request: { requestId: string; mimeType: string; audio: ArrayBuffer }): Promise<{
+      schema: "wellbeing.local-speech.provider-result.v1";
+      requestId: string;
+      status: "completed" | "unavailable" | "failed";
+      text: string;
+      language: string;
+      rawAudioPersisted: false;
+    }>;
+  };
   setWindowMode?(mode: "full" | "compact" | "character"): Promise<{
     mode: "full" | "compact" | "character";
     alwaysOnTop: boolean;
@@ -96,6 +107,8 @@ function requestId(): string {
 export function steadyEnhancementEligible(userText: string, reply: CompanionReply): boolean {
   return reply.safetyLevel === "steady"
     && !reply.showUrgentOptions
+    && !reply.companionNameChange
+    && !reply.companionIdentityReply
     && !HEALTH_BOUNDARY.test(userText)
     && !HEALTH_BOUNDARY.test(reply.text)
     && !PROTECTED_RELATIONSHIP_AND_RECALL_BOUNDARY.test(reply.text);

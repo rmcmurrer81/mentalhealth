@@ -36,23 +36,31 @@ does not pre-empt that choice.
   verifies the fixed loopback health endpoint. Only an `ERR_FAILED (-2)` startup
   result receives a bounded 24-retry, 250-millisecond window with
   explicit attempt evidence; unrelated navigation errors still fail closed.
-- Microphone access is not requested at startup. Clicking hands-free invokes the
-  narrow preload bridge, opens a default-deny native prompt, and temporarily arms
-  audio-only access. Stopping or hiding the app disarms it. Camera, display capture,
-  generic device permissions, downloads, and combined audio/video requests fail
-  closed.
-- Text conversation always remains available. Chromium speech recognition may be
-  unavailable or backed by a device/vendor online service; this package does not
-  claim guaranteed offline speech recognition.
+- First run asks for preferred name, soft-female or warm-male local voice,
+  light/default-medium/dark theme, and whether to set up hands-free input. Before
+  any microphone request it explains that the app cannot silently grant or bypass
+  Windows permission. The native prompt is default-deny and temporarily arms
+  audio-only access. Stopping, muting capture, hiding, locking, changing private
+  space, or quitting stops tracks and disarms it. Camera, display capture, generic
+  device permissions, downloads, and combined audio/video requests fail closed.
+- Installed hands-free input records one bounded in-memory turn with `MediaRecorder`
+  and sends it only to an authenticated ephemeral-loopback, cache-only
+  `faster-whisper-small.en` host. Raw audio and transcript files are not written.
+  The model cache and Python packages are external dependencies; if they are absent,
+  text conversation remains available. The browser development view may retain its
+  separate browser recognition fallback, but the installed route does not use it.
 - The renderer and preload expose only a versioned `status` / `speak` / `cancel`
-  local-voice contract. Candidate 0.2.12 connects it to a separately spawned,
+  local-voice contract. Candidate 0.2.25 connects it to a separately spawned,
   authenticated loopback Chatterbox host using the two hash-bound original synthetic
   references. The host forces offline model access, caps requests, owns playback,
   and is terminated with the app. It never exposes its token, model identity, port,
   or generated-audio path to the renderer. The roughly 3.2 GB model cache, Python
   3.14 packages, and CUDA runtime remain external local dependencies and are not
   bundled. If they are unavailable, complete text remains visible and no Chromium,
-  Windows, or named-person substitute voice is used.
+  Windows, or named-person substitute voice is used. The renderer marks speech only
+  after an output-only actual-playback event and receives bounded amplitude/text-class
+  timing—not conversation text, raw audio, or a generated-audio path. Mute cancels
+  both active generation and active Windows playback.
 
 ## Optional local model boundary
 
@@ -97,7 +105,7 @@ The package builder pins Electron 43.4.1 and checks its official archive SHA-256
 before staging. It produces:
 
 - `release\win-unpacked\WellbeingCompanionWorkingTitle.exe`
-- `release\Wellbeing-Companion-Working-Title-Setup-0.2.12-win32-x64.zip`
+- `release\Wellbeing-Companion-Working-Title-Setup-0.2.25-win32-x64.zip`
 - the ZIP `.sha256.txt` sidecar and external `.receipt.json`
 - embedded build and setup receipts with exact file manifests
 
@@ -109,8 +117,9 @@ renderer, fixed loopback health response, localStorage round trip, absent render
 permissions, the static local-model boundary, and the three-method local-voice IPC
 boundary in fail-closed smoke mode with no provider activation, playback, or
 system-voice fallback. Exact authored-file verification separately binds the
-Chatterbox adapter, Python host, reviewed reference hashes, loopback/authentication/
-offline-only source boundaries, and absence of bundled model weights.
+Chatterbox adapter/host/references, local-speech adapter/host/fixed synthetic probe,
+the reviewed 4-by-2 friendly character sheet, loopback/authentication/offline-cache
+boundaries, and absence of bundled model weights.
 It also requires the exact renderer-session warmup and bounded initial-navigation
 attempt receipt.
 
@@ -136,12 +145,20 @@ Extract the setup ZIP completely, open the extracted folder, and double-click
 PowerShell implementation is deliberately kept beneath `Support` so ordinary setup
 does not open installer source in a text editor.
 
-The development executable and setup launcher may be Authenticode `NotSigned`. The
-launcher verifies the exact setup/build receipts and opens a cancel-first warning;
-installation continues only when the user explicitly accepts the checksum-verified
-unsigned build. `-AcceptVerifiedUnsignedRuntime` is an internal controlled-test
-acknowledgement used by the receipt-bound support script; it does not make either
-executable signed.
+The development executable and setup launcher may be Authenticode `NotSigned`.
+The build and verification receipts now bind the official Electron archive hash,
+the upstream `electron.exe` hash and Authenticode state, the selected runtime hash,
+and whether rename changed any bytes. Candidate 0.2.25 applies no runtime resource
+mutation and its renamed host is byte-for-byte identical to the pinned official
+Electron 43.4.1 host; that upstream host is itself `NotSigned`, so this preservation
+does not create an Electron or Microsoft publisher chain. A future supplied signed
+runtime must match both an explicit SHA-256 and an explicit signer thumbprint. Windows
+Smart App Control or reputation protection may still show its own operating-system warning.
+The launcher itself uses normal welcome, location/shortcut review, real worker-tied
+progress, and finish pages—without custom unsigned-warning or completion popups and
+without an artificial delay. The receipt-bound support call uses
+`-AcceptVerifiedUnsignedRuntime` internally after the wizard validates its sealed
+support path; the flag does not make either executable signed.
 
 Installed Apps or the Start-menu uninstall shortcut offers preservation by default
 and a separate explicit remove-all choice. Managed removal can use `-PreserveData` or
@@ -151,25 +168,30 @@ boundaries, shortcuts, the uninstall key, and reparse points before deletion.
 ## Honest remaining gates
 
 - A public consumer build still needs a Kira Labs Authenticode publisher certificate.
+- The no-certificate public alternative is an owner-controlled Microsoft Store MSIX
+  submission that Microsoft signs only after certification. It requires Partner
+  Center identity verification, a reserved final name and assigned package identity,
+  exact manifest values, submission assets, and Store acceptance. The current machine
+  has no MSIX packaging/signing tool or code-signing certificate, so no local artifact
+  is represented as Store-ready or Microsoft-signed.
 - The real installer/preserve/reinstall/remove-all flow needs a disposable Windows
   user or VM; this lane does not mutate the current user's profile.
-- Packaged speech recognition remains device-dependent. The local-speech IPC broker
-  is fail-closed. One bounded source-provider probe on the development computer
-  loaded the already-cached Chatterbox model, synthesized a generic female line,
-  and confirmed local playback. The exact installed 0.2.12 package has not yet
-  repeated that audible test, and other computers without the external Python/CUDA/
-  cache dependencies remain text-only. Owner discovery, playback, mute, and cleanup
-  testing are still required.
-- Candidate 0.2.12 contains the current 1,663-test source and 69-test desktop shell,
+- Packaged voice and speech remain dependency- and device-dependent. The exact-archive
+  acceptance lane includes a fixed synthetic audible Chatterbox playback plus a
+  playing-phase mute cancellation and a separate fixed synthetic local transcription
+  that opens no microphone and retains no transcript text in its receipt. Other
+  computers without the external Python/model/compute dependencies remain text-only.
+  Owner discovery, real microphone, playback, mute, and cleanup testing are still required.
+- Candidate 0.2.25 contains the current source and desktop-shell regression suites,
   adds default always-on-top behavior (with an explicit unpin control) to the compact
   character-first and character-only window modes, and supersedes
   0.2.8 plus the earlier repair packages. Two fresh exact 0.2.5 runs reached the healthy loopback
-  runtime but exhausted every bounded renderer-navigation attempt. Candidate 0.2.12
+  runtime but exhausted every bounded renderer-navigation attempt. Candidate 0.2.25
   repairs that current failure with the disclosed build-26200-26399 child-process
   compatibility boundary. It remains on unsigned OWNER-TEST CANDIDATE HOLD. Use it only with
   its matching sidecar, package receipt, and current sanitized verification evidence.
   Its packaged-process probe must prove
-  genuine WebGL motion and wave, distinct native identity and custom icon, a
+  the reviewed friendly sprite renderer and advancing motion, distinct native identity and custom icon, a
   fail-closed smoke voice boundary with no system-voice fallback, and recovery from denied
   hands-free permission to a completed typed deterministic reply. Setup verification
   must also prove the root double-click launcher, PowerShell confined to `Support`,

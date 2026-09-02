@@ -1,0 +1,41 @@
+{
+  "id": "/",
+  "name": "Wellbeing Companion — Working Title",
+  "short_name": "Companion",
+  "description": "A private, local-first wellbeing companion that remembers what matters and keeps the conversation going.",
+  "start_url": "/?layout=full&pwa=1",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": [
+    "standalone",
+    "minimal-ui"
+  ],
+  "orientation": "any",
+  "background_color": "#130a42",
+  "theme_color": "#261b35",
+  "categories": [
+    "health",
+    "lifestyle",
+    "productivity"
+  ],
+  "icons": [
+    {
+      "src": "/pwa/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

@@ -5,6 +5,17 @@ export type CompanionVoiceProfile = CompanionProfile["voice"];
 export const LOCAL_VOICE_STATUS_SCHEMA = "wellbeing.local-voice.status.v1" as const;
 export const LOCAL_VOICE_REQUEST_SCHEMA = "wellbeing.local-voice.speak-request.v1" as const;
 export const LOCAL_VOICE_RESULT_SCHEMA = "wellbeing.local-voice.speak-result.v1" as const;
+export const LOCAL_VOICE_PLAYBACK_SCHEMA = "wellbeing.local-voice.playback-start.v1" as const;
+
+export type LocalVoiceViseme = "rest" | "jaw-open" | "wide" | "rounded" | "lip-contact";
+export type LocalVoicePlaybackEvent = {
+  schema: typeof LOCAL_VOICE_PLAYBACK_SCHEMA;
+  requestId: string;
+  durationMs: number;
+  timingBasis: "generated-waveform-amplitude-plus-text-class-heuristic";
+  amplitudeFrames: Array<{ startMs: number; level: number }>;
+  visemeCues: Array<{ startMs: number; endMs: number; viseme: LocalVoiceViseme }>;
+};
 
 export type LocalVoiceUnavailableCode =
   | "not-configured"
@@ -46,6 +57,8 @@ export type LocalVoiceClient = {
   status: () => Promise<LocalVoiceProviderStatus>;
   speak: (request: LocalVoiceSpeakRequest) => Promise<LocalVoiceSpeakResult>;
   cancel: (requestId: string) => void | Promise<void>;
+  /** Output-only sanitized timing event emitted when actual device playback starts. */
+  onPlaybackStart?: (listener: (event: unknown) => void) => () => void;
 };
 
 const PROFILES: readonly CompanionVoiceProfile[] = ["soft-feminine", "warm-neutral", "calm-masculine"];
@@ -112,6 +125,38 @@ export function validLocalVoiceResult(value: unknown, requestId: string): value 
     && result.schema === LOCAL_VOICE_RESULT_SCHEMA
     && result.requestId === requestId
     && (result.status === "completed" || result.status === "unavailable" || result.status === "failed");
+}
+
+export function validLocalVoicePlaybackEvent(value: unknown): value is LocalVoicePlaybackEvent {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const event = value as Partial<LocalVoicePlaybackEvent>;
+  if (!hasExactKeys(value, ["schema", "requestId", "durationMs", "timingBasis", "amplitudeFrames", "visemeCues"])
+    || event.schema !== LOCAL_VOICE_PLAYBACK_SCHEMA
+    || typeof event.requestId !== "string"
+    || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(event.requestId)
+    || !Number.isInteger(event.durationMs) || event.durationMs! < 100 || event.durationMs! > 90_000
+    || event.timingBasis !== "generated-waveform-amplitude-plus-text-class-heuristic"
+    || !Array.isArray(event.amplitudeFrames) || event.amplitudeFrames.length < 1 || event.amplitudeFrames.length > 1_000
+    || !Array.isArray(event.visemeCues) || event.visemeCues.length < 1 || event.visemeCues.length > 1_000) return false;
+  let priorAmplitude = -1;
+  for (const frame of event.amplitudeFrames) {
+    if (!frame || typeof frame !== "object" || Array.isArray(frame)
+      || !hasExactKeys(frame, ["startMs", "level"])
+      || !Number.isInteger(frame.startMs) || frame.startMs <= priorAmplitude || frame.startMs >= event.durationMs!
+      || typeof frame.level !== "number" || !Number.isFinite(frame.level) || frame.level < 0 || frame.level > 1) return false;
+    priorAmplitude = frame.startMs;
+  }
+  const visemes: readonly LocalVoiceViseme[] = ["rest", "jaw-open", "wide", "rounded", "lip-contact"];
+  let priorEnd = 0;
+  for (const cue of event.visemeCues) {
+    if (!cue || typeof cue !== "object" || Array.isArray(cue)
+      || !hasExactKeys(cue, ["startMs", "endMs", "viseme"])
+      || !Number.isInteger(cue.startMs) || !Number.isInteger(cue.endMs)
+      || cue.startMs < priorEnd || cue.endMs <= cue.startMs || cue.endMs > event.durationMs!
+      || !visemes.includes(cue.viseme as LocalVoiceViseme)) return false;
+    priorEnd = cue.endMs;
+  }
+  return true;
 }
 
 /** Explicit text-only client used until a reviewed local provider is wired. */

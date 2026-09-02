@@ -112,10 +112,14 @@ export interface InterestPack {
   updatedAt: string;
 }
 
-export type ThemePreference = "system" | "light" | "dark";
+export type ThemePreference = "system" | "light" | "medium" | "dark";
 
 export interface CompanionProfile {
+  /** Explicitly completed desktop first-run choices; absent legacy profiles migrate to false. */
+  onboardingCompleted: boolean;
   preferredName: string;
+  /** User-selected synthetic companion display name. Stored only in this local private profile. */
+  companionName: string;
   memories: MemoryRecord[];
   medications: MedicationPlan[];
   appointments: AppointmentPlan[];
@@ -123,6 +127,8 @@ export interface CompanionProfile {
   voice: "soft-feminine" | "warm-neutral" | "calm-masculine";
   theme: ThemePreference;
   speechEnabled: boolean;
+  /** True only after the user explicitly chooses the spoken-replies setting. */
+  speechPreferenceSet?: boolean;
   learningEnabled: boolean;
   interestPacksEnabled: boolean;
   interests: InterestPack[];
@@ -138,4 +144,8 @@ export interface CompanionReply {
   suggestedActions: string[];
   showUrgentOptions: boolean;
   affectCueEvidence?: AffectCueEvidence;
+  /** A validated local-only companion rename requested by this turn. */
+  companionNameChange?: string;
+  /** Keep a local synthetic-identity answer out of optional generative rewriting. */
+  companionIdentityReply?: true;
 }

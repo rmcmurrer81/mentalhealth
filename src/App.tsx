@@ -1,5 +1,6 @@
 import { FormEvent, KeyboardEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatedMascot } from "./components/AnimatedMascot";
+import { ReactiveCompanionOrb } from "./components/ReactiveCompanionOrb";
+import { PwaInstallControl } from "./components/PwaInstallControl";
 import { classifyExpression, isPartyRoleplayTurn, respond } from "./lib/companion";
 import {
   createGameSession,
@@ -51,7 +52,14 @@ import { PrivacySessionEpochGuard } from "./lib/privacy-session";
 import type { CompanionExpression, CompanionProfile, ConversationTurn, MemoryRecord, ThemePreference } from "./lib/types";
 import { resolveEffectiveTheme, themeConfirmation, themePreferenceFromCommand } from "./lib/theme";
 import { createLocalVoiceOutput, type VoiceOutput } from "./lib/voice";
+import type { LocalVoicePlaybackEvent } from "./lib/local-voice-client";
 import { approvedVoicePreview } from "./lib/voice-preview";
+import {
+  DEFAULT_COMPANION_NAME,
+  cleanCompanionName,
+  companionNameFromOptionalInput,
+  companionNameFromStoredProfile,
+} from "./lib/companion-name";
 
 type RecognitionInstance = {
   continuous: boolean;
@@ -66,6 +74,19 @@ type RecognitionInstance = {
 
 type RecognitionConstructor = new () => RecognitionInstance;
 type CompactPanel = "activities" | "memory" | "settings";
+
+type LocalCaptureSession = {
+  recorder: MediaRecorder;
+  stream: MediaStream;
+  audioContext: AudioContext | null;
+  animationFrame: number | null;
+  chunks: Blob[];
+  bytes: number;
+  discard: boolean;
+  heardSpeech: boolean;
+  silentSince: number | null;
+  startedAt: number;
+};
 
 declare global {
   interface Window {
@@ -86,6 +107,18 @@ function requestedInitialWindowLayout(): "full" | "compact" | "character" {
   return layout === "full" || layout === "character" ? layout : "compact";
 }
 
+function desktopFirstRunRequested(): boolean {
+  return new URLSearchParams(window.location.search).get("desktop") === "1";
+}
+
+function cleanPreferredName(value: string): string {
+  return value.normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40);
+}
+
 const openingTurn = (): ConversationTurn => ({
   id: id(),
   role: "companion",
@@ -102,10 +135,22 @@ const guardianOpeningTurn = (): ConversationTurn => ({
   safetyLevel: "steady",
 });
 
+const personalizedOpeningTurn = (preferredName: string, companionName: string): ConversationTurn => ({
+  id: id(),
+  role: "companion",
+  text: `Hi, ${preferredName}. I’m ${companionName}, your local synthetic companion. I’m ready to listen, remember only what you choose to keep, and stay honest that I’m not a human person. It’s good to meet you.`,
+  createdAt: new Date().toISOString(),
+  safetyLevel: "steady",
+  safetyContext: "general",
+});
+
 function ensureOpening(profile: CompanionProfile, role: VaultRole, now = new Date()): CompanionProfile {
   const normalized = {
     ...defaultProfile(),
     ...profile,
+    companionName: companionNameFromStoredProfile(profile.companionName),
+    speechEnabled: profile.speechPreferenceSet === true ? profile.speechEnabled !== false : true,
+    speechPreferenceSet: profile.speechPreferenceSet === true,
     affectCueEvidence: Array.isArray(profile.affectCueEvidence) ? profile.affectCueEvidence : [],
   };
   const opened = normalized.turns.length
@@ -144,11 +189,31 @@ function gamePromptActions(prompt: GamePrompt): string[] {
 export default function App() {
   const startsLockedRef = useRef(hasVault("primary"));
   const initialWindowLayoutRef = useRef(requestedInitialWindowLayout());
+  const desktopFirstRunRef = useRef(desktopFirstRunRequested());
   const [profile, setProfileState] = useState<CompanionProfile>(() => {
     const loaded = startsLockedRef.current ? defaultProfile() : loadProfile();
     return ensureOpening(loaded, "primary");
   });
   const [locked, setLocked] = useState(startsLockedRef.current);
+  const [onboardingOpen, setOnboardingOpen] = useState(() => (
+    desktopFirstRunRef.current && !startsLockedRef.current && !profile.onboardingCompleted
+  ));
+  const [onboardingStep, setOnboardingStep] = useState(0);
+  const [onboardingName, setOnboardingName] = useState(profile.preferredName);
+  const [onboardingCompanionName, setOnboardingCompanionName] = useState(
+    profile.companionName === DEFAULT_COMPANION_NAME ? "" : profile.companionName,
+  );
+  const [onboardingVoice, setOnboardingVoice] = useState<"soft-feminine" | "calm-masculine">(
+    profile.voice === "calm-masculine" ? "calm-masculine" : "soft-feminine",
+  );
+  const [onboardingTheme, setOnboardingTheme] = useState<"light" | "medium" | "dark">(
+    profile.theme === "light" || profile.theme === "dark" ? profile.theme : "medium",
+  );
+  const [onboardingAudioEnabled, setOnboardingAudioEnabled] = useState(profile.speechEnabled);
+  const [onboardingMicrophoneEnabled, setOnboardingMicrophoneEnabled] = useState(false);
+  const [onboardingProblem, setOnboardingProblem] = useState("");
+  const [onboardingCompleting, setOnboardingCompleting] = useState(false);
+  const [onboardingVoiceFailed, setOnboardingVoiceFailed] = useState(false);
   const [accessRole, setAccessRole] = useState<VaultRole>("primary");
   const [unlockRole, setUnlockRole] = useState<VaultRole>("primary");
   const [privacyConfigured, setPrivacyConfigured] = useState(() => hasVault("primary"));
@@ -164,8 +229,8 @@ export default function App() {
   const [handsFree, setHandsFree] = useState(false);
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  const [speechMotion, setSpeechMotion] = useState<{ event: LocalVoicePlaybackEvent; startedAt: number } | null>(null);
   const [guiding, setGuiding] = useState(false);
-  const [waving, setWaving] = useState(true);
   const [expression, setExpression] = useState<CompanionExpression>("neutral");
   const [compactMode, setCompactMode] = useState(initialWindowLayoutRef.current !== "full");
   const [characterOnlyMode, setCharacterOnlyMode] = useState(initialWindowLayoutRef.current === "character");
@@ -175,6 +240,9 @@ export default function App() {
   const [compactNotice, setCompactNotice] = useState("");
   const [systemPrefersDark, setSystemPrefersDark] = useState(() => window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCompanionName, setSettingsCompanionName] = useState(
+    profile.companionName === DEFAULT_COMPANION_NAME ? "" : profile.companionName,
+  );
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [gameOpen, setGameOpen] = useState(false);
   const [gameSession, setGameSession] = useState<GameSession | null>(null);
@@ -186,6 +254,7 @@ export default function App() {
   const [modelNotice, setModelNotice] = useState("Deterministic offline core ready");
   const [modelBusy, setModelBusy] = useState(false);
   const recognitionRef = useRef<RecognitionInstance | null>(null);
+  const localCaptureRef = useRef<LocalCaptureSession | null>(null);
   const handsFreeRef = useRef(false);
   const voiceProcessingRef = useRef(false);
   const speakingRef = useRef(false);
@@ -199,17 +268,21 @@ export default function App() {
   const sendSequenceRef = useRef(0);
   const activeSendRef = useRef<number | null>(null);
   const restartListeningTimerRef = useRef<number | null>(null);
-  const speechStartTimerRef = useRef<number | null>(null);
   const startRecognitionRef = useRef<() => void | Promise<void>>(() => undefined);
   const voiceOutputRef = useRef<VoiceOutput | null>(null);
   const localVoiceStateRef = useRef<"checking" | "ready" | "unavailable">("checking");
   const pendingSpokenReplyRef = useRef<{ text: string; source: "typed" | "hands-free" } | null>(null);
   const openingSpeechAttemptedRef = useRef(false);
+  const onboardingIntroPendingRef = useRef(false);
+  const onboardingIntroSpokeRef = useRef(false);
+  const pendingOnboardingIntroductionRef = useRef<ConversationTurn | null>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const vaultSessionRef = useRef<VaultSession | null>(null);
   const vaultWriteVersionRef = useRef(0);
   const turnsRef = useRef<HTMLDivElement | null>(null);
   const compactTurnsRef = useRef<HTMLDivElement | null>(null);
+  const latestTurnRef = useRef<HTMLElement | null>(null);
+  const latestCompactTurnRef = useRef<HTMLElement | null>(null);
   const messageInputRef = useRef<HTMLTextAreaElement | null>(null);
   const memoryDrawerRef = useRef<HTMLElement | null>(null);
   const settingsDrawerRef = useRef<HTMLElement | null>(null);
@@ -227,12 +300,19 @@ export default function App() {
   if (!voiceOutputRef.current) voiceOutputRef.current = createLocalVoiceOutput(window.wellbeingDesktop?.localVoice);
 
   const effectiveTheme = resolveEffectiveTheme(profile.theme, systemPrefersDark);
+  const onboardingCompanionNameValid = companionNameFromOptionalInput(onboardingCompanionName) !== null;
 
   useLayoutEffect(() => {
     document.documentElement.dataset.theme = effectiveTheme;
     document.documentElement.dataset.themePreference = profile.theme;
-    document.documentElement.style.colorScheme = effectiveTheme;
+    document.documentElement.style.colorScheme = effectiveTheme === "medium" ? "dark" : effectiveTheme;
   }, [effectiveTheme, profile.theme]);
+
+  useEffect(() => {
+    if (!settingsOpen) {
+      setSettingsCompanionName(profile.companionName === DEFAULT_COMPANION_NAME ? "" : profile.companionName);
+    }
+  }, [profile.companionName, settingsOpen]);
 
   useEffect(() => {
     const query = window.matchMedia?.("(prefers-color-scheme: dark)");
@@ -288,7 +368,13 @@ export default function App() {
     const opening = current.turns.length === 1 && current.turns[0]?.role === "companion"
       ? current.turns[0]
       : null;
-    if (!openingSpeechAttemptedRef.current && opening && !current.preferredName && current.speechEnabled) {
+    if (
+      !openingSpeechAttemptedRef.current
+      && opening
+      && !current.preferredName
+      && current.speechEnabled
+      && (!desktopFirstRunRef.current || current.onboardingCompleted)
+    ) {
       openingSpeechAttemptedRef.current = true;
       queueSpokenReply(opening.text);
     }
@@ -298,6 +384,11 @@ export default function App() {
     const pending = pendingSpokenReplyRef.current;
     if (!pending) return;
     pendingSpokenReplyRef.current = null;
+    if (onboardingIntroPendingRef.current) {
+      setOnboardingVoiceFailed(true);
+      setVoiceNotice("The local voice did not become ready. Nothing was substituted; choose text only or restart after repairing the local voice cache.");
+      return;
+    }
     setVoiceNotice(pending.source === "hands-free"
       ? "The optional local voice did not become ready. The complete reply stays visible and listening will resume."
       : "The optional local voice did not become ready. The complete reply stays visible as text.");
@@ -311,6 +402,20 @@ export default function App() {
     }, stop);
   }
 
+  function stopLocalCapture(discard = true) {
+    const capture = localCaptureRef.current;
+    if (!capture) return;
+    localCaptureRef.current = null;
+    capture.discard = discard;
+    if (capture.animationFrame !== null) window.cancelAnimationFrame(capture.animationFrame);
+    capture.animationFrame = null;
+    for (const track of capture.stream.getTracks()) track.stop();
+    void capture.audioContext?.close().catch(() => undefined);
+    if (capture.recorder.state !== "inactive") {
+      try { capture.recorder.stop(); } catch { /* already stopping */ }
+    }
+  }
+
   function quiesceConversationForPrivacyTransition(message: string) {
     activeSendRef.current = null;
     modelBusyRef.current = false;
@@ -321,6 +426,7 @@ export default function App() {
     if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
     restartListeningTimerRef.current = null;
     detachRecognitionInstance();
+    stopLocalCapture(true);
     window.wellbeingDesktop?.disarmMicrophone();
     setListening(false);
     stopVoicePreview(false);
@@ -383,9 +489,16 @@ export default function App() {
       .catch(() => setAccessProblem("The encrypted vault could not be updated. Lock the app and try again before adding private information."));
   }, [profile, locked, accessRole]);
   useEffect(() => {
-    for (const turns of [turnsRef.current, compactTurnsRef.current]) {
-      turns?.scrollTo({ top: turns.scrollHeight, behavior: "smooth" });
-    }
+    const revealLatestTurnFromItsBeginning = (
+      transcript: HTMLDivElement | null,
+      latestTurn: HTMLElement | null,
+    ) => {
+      if (!transcript || !latestTurn) return;
+      const top = Math.max(0, latestTurn.offsetTop - transcript.offsetTop);
+      transcript.scrollTo({ top, behavior: "smooth" });
+    };
+    revealLatestTurnFromItsBeginning(turnsRef.current, latestTurnRef.current);
+    revealLatestTurnFromItsBeginning(compactTurnsRef.current, latestCompactTurnRef.current);
   }, [profile.turns]);
   useEffect(() => {
     const voice = window.wellbeingDesktop?.localVoice;
@@ -410,7 +523,10 @@ export default function App() {
         // Typed conversation remains fully available while the optional host starts or fails.
       }
       attempts += 1;
-      if (attempts >= 24) {
+      // Cold local voice startup is intentionally cache-only and may be slow on
+      // a low-memory computer. Keep the complete text visible while allowing a
+      // bounded 150-second readiness window before declaring it unavailable.
+      if (attempts >= 100) {
         commitLocalVoiceState("unavailable");
         failPendingVoiceQueue();
         return;
@@ -453,15 +569,11 @@ export default function App() {
     const activeElement = document.activeElement;
     if (!(activeElement instanceof HTMLElement) || !focusable.includes(activeElement)) focusable[0]?.focus();
   });
-  useEffect(() => {
-    const timer = window.setTimeout(() => setWaving(false), 4_500);
-    return () => window.clearTimeout(timer);
-  }, []);
   useEffect(() => () => {
     handsFreeRef.current = false;
     if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
-    if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
     detachRecognitionInstance();
+    stopLocalCapture(true);
     window.wellbeingDesktop?.disarmMicrophone();
     voiceOutputRef.current?.dispose();
     const preview = previewAudioRef.current;
@@ -481,7 +593,6 @@ export default function App() {
   }, [profile.medications, profile.appointments]);
 
   const lastSafety = profile.turns.at(-1)?.safetyLevel ?? "steady";
-  const mascotIdentity = profile.voice === "calm-masculine" ? "light-blue" : "warm-plum";
   const selectedVoicePreview = approvedVoicePreview(profile.voice);
   const compactVoiceStatus = !profile.speechEnabled
     ? "Spoken replies muted"
@@ -520,7 +631,13 @@ export default function App() {
   function finishSpokenReply(source: "typed" | "hands-free") {
     speakingRef.current = false;
     setSpeaking(false);
-    if (source === "hands-free") {
+    setSpeechMotion(null);
+    if (onboardingIntroPendingRef.current) {
+      if (onboardingIntroSpokeRef.current) void enterMainAfterOnboarding("spoken");
+      else setOnboardingVoiceFailed(true);
+      return;
+    }
+    if (source === "hands-free" || handsFreeRef.current) {
       voiceProcessingRef.current = false;
       scheduleHandsFreeListening();
     }
@@ -536,36 +653,39 @@ export default function App() {
       setVoiceNotice("The local voice is warming up. This complete reply is visible now and will be spoken when the voice is ready.");
       return;
     }
-    if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-    speechStartTimerRef.current = window.setTimeout(() => {
-      speechStartTimerRef.current = null;
-      voiceOutputRef.current?.speak({
-        text,
-        profile: profileRef.current.voice,
-        enabled: profileRef.current.speechEnabled,
-        onStart: () => {
-          speakingRef.current = true;
-          setSpeaking(true);
-          commitLocalVoiceState("ready");
-          setVoiceNotice("Speaking with the local synthetic Chatterbox voice.");
-        },
-        onUnavailable: () => {
-          commitLocalVoiceState("unavailable");
-          setVoiceNotice(source === "hands-free"
-            ? "The optional local Chatterbox voice is unavailable. Text remains visible and listening will resume."
-            : "The optional local Chatterbox voice is unavailable. This complete reply remains visible as text.");
-        },
-        onEnd: () => finishSpokenReply(source),
-      });
-    }, 50);
+    voiceOutputRef.current?.speak({
+      text,
+      profile: profileRef.current.voice,
+      enabled: profileRef.current.speechEnabled,
+      onStart: (playback) => {
+        if (!playback) {
+          setVoiceNotice("The local voice host did not confirm actual playback timing. The complete reply remains visible and no mouth motion was fabricated.");
+          return;
+        }
+        if (onboardingIntroPendingRef.current) onboardingIntroSpokeRef.current = true;
+        speakingRef.current = true;
+        setSpeaking(true);
+        setSpeechMotion({ event: playback, startedAt: performance.now() });
+        commitLocalVoiceState("ready");
+        setVoiceNotice("Speaking with the local synthetic Chatterbox voice.");
+      },
+      onPlayback: (playback) => setSpeechMotion({ event: playback, startedAt: performance.now() }),
+      onUnavailable: () => {
+        commitLocalVoiceState("unavailable");
+        if (onboardingIntroPendingRef.current) setOnboardingVoiceFailed(true);
+        setVoiceNotice(source === "hands-free"
+          ? "The optional local Chatterbox voice is unavailable. Text remains visible and listening will resume."
+          : "The optional local Chatterbox voice is unavailable. This complete reply remains visible as text.");
+      },
+      onEnd: () => finishSpokenReply(source),
+    });
   }
 
   function cancelSpokenReply(resumeHandsFree: boolean) {
-    if (speechStartTimerRef.current !== null) window.clearTimeout(speechStartTimerRef.current);
-    speechStartTimerRef.current = null;
     voiceOutputRef.current?.cancel();
     speakingRef.current = false;
     setSpeaking(false);
+    setSpeechMotion(null);
     if (resumeHandsFree && handsFreeRef.current) {
       voiceProcessingRef.current = false;
       scheduleHandsFreeListening();
@@ -589,7 +709,7 @@ export default function App() {
         ? "Spoken replies are on. The local synthetic Chatterbox voice is ready."
         : "Spoken replies are on. The optional local Chatterbox voice is still warming up or unavailable; text always remains visible.");
     }
-    updateProfile((current) => ({ ...current, speechEnabled: enabled }));
+    updateProfile((current) => ({ ...current, speechEnabled: enabled, speechPreferenceSet: true }));
   }
 
   function stopVoicePreview(resumeHandsFree: boolean) {
@@ -625,6 +745,7 @@ export default function App() {
     if (handsFreeRef.current) {
       voiceProcessingRef.current = true;
       detachRecognitionInstance();
+      stopLocalCapture(true);
       setListening(false);
     }
     const preview = new Audio(selectedVoicePreview.file);
@@ -803,10 +924,6 @@ export default function App() {
       carePlans.appointments.length = 0;
     }
     setExpression(classifyExpression(text, reply.safetyLevel));
-    if (/\b(?:hi|hello|good morning|good evening|great news|good news)\b/i.test(text)) {
-      setWaving(true);
-      window.setTimeout(() => setWaving(false), 3_500);
-    }
     const learnedMemoryIds = reply.learned.map((learned) => replyProfile.memories.find((saved) => (
       saved.kind === learned.kind
       && saved.label.trim().toLocaleLowerCase("en-US") === learned.label.trim().toLocaleLowerCase("en-US")
@@ -835,6 +952,7 @@ export default function App() {
       const next = {
         ...current,
         preferredName: learnedName ?? current.preferredName,
+        companionName: reply.companionNameChange ?? current.companionName,
         memories: mergeMemories(current.memories, reply.learned),
         medications: applyAdherenceSignal(mergeMedicationPlans(current.medications, carePlans.medications), groundedText),
         appointments: mergeAppointmentPlans(current.appointments, carePlans.appointments),
@@ -925,9 +1043,169 @@ export default function App() {
     void send(input);
   }
 
+  async function startLocalRecognition(requestedPrivacyEpoch: number) {
+    const localSpeech = window.wellbeingDesktop?.localSpeech;
+    if (!localSpeech || localCaptureRef.current) return;
+    const status = await localSpeech.status().catch(() => null);
+    if (!status?.ready || !status.localOnly || !status.cacheOnly || status.rawAudioPersisted) {
+      setListening(false);
+      setVoiceNotice("Local speech recognition is warming up. Listening will retry automatically; no audio is being captured yet.");
+      scheduleHandsFreeListening(1_000);
+      return;
+    }
+    const microphoneArmed = await window.wellbeingDesktop!.armMicrophone().catch(() => false);
+    if (!microphoneArmed
+      || !profileMutationAllowed()
+      || privacySessionGuardRef.current.capture() !== requestedPrivacyEpoch
+      || !handsFreeRef.current) {
+      window.wellbeingDesktop?.disarmMicrophone();
+      if (!microphoneArmed) {
+        handsFreeRef.current = false;
+        setHandsFree(false);
+        setVoiceNotice("The microphone was not enabled. Nothing was recorded; text conversation remains available.");
+      }
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+      if (!profileMutationAllowed()
+        || privacySessionGuardRef.current.capture() !== requestedPrivacyEpoch
+        || !handsFreeRef.current) {
+        for (const track of stream.getTracks()) track.stop();
+        window.wellbeingDesktop?.disarmMicrophone();
+        return;
+      }
+      const preferredMime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+        .find((candidate) => typeof MediaRecorder.isTypeSupported !== "function" || MediaRecorder.isTypeSupported(candidate));
+      const recorder = new MediaRecorder(stream, preferredMime
+        ? { mimeType: preferredMime, audioBitsPerSecond: 96_000 }
+        : { audioBitsPerSecond: 96_000 });
+      const AudioContextConstructor = window.AudioContext;
+      const audioContext = AudioContextConstructor ? new AudioContextConstructor() : null;
+      const analyser = audioContext?.createAnalyser() ?? null;
+      if (analyser && audioContext) {
+        analyser.fftSize = 512;
+        analyser.smoothingTimeConstant = 0.32;
+        audioContext.createMediaStreamSource(stream).connect(analyser);
+      }
+      const capture: LocalCaptureSession = {
+        recorder,
+        stream,
+        audioContext,
+        animationFrame: null,
+        chunks: [],
+        bytes: 0,
+        discard: false,
+        heardSpeech: false,
+        silentSince: null,
+        startedAt: performance.now(),
+      };
+      localCaptureRef.current = capture;
+      recorder.ondataavailable = (event) => {
+        if (capture.discard || !event.data.size || capture.bytes + event.data.size > 12 * 1024 * 1024) return;
+        capture.bytes += event.data.size;
+        capture.chunks.push(event.data);
+      };
+      recorder.onstop = () => {
+        if (capture.discard) return;
+        void (async () => {
+          setListening(false);
+          if (!capture.heardSpeech || capture.bytes < 64 || !handsFreeRef.current) {
+            setVoiceNotice("Still here. Listening again…");
+            scheduleHandsFreeListening(450);
+            return;
+          }
+          voiceProcessingRef.current = true;
+          setVoiceNotice("Transcribing this turn locally. Raw microphone audio is not saved.");
+          const mimeType = (recorder.mimeType || preferredMime || "audio/webm").split(";", 1)[0].toLowerCase();
+          const audio = await new Blob(capture.chunks, { type: mimeType }).arrayBuffer();
+          capture.chunks.length = 0;
+          const requestId = `speech-${id()}`;
+          const result = await localSpeech.transcribe({ requestId, mimeType, audio }).catch(() => null);
+          if (!handsFreeRef.current
+            || lockedRef.current
+            || privacySessionGuardRef.current.capture() !== requestedPrivacyEpoch) {
+            voiceProcessingRef.current = false;
+            return;
+          }
+          const transcript = result?.schema === "wellbeing.local-speech.provider-result.v1"
+            && result.requestId === requestId
+            && result.status === "completed"
+            && result.rawAudioPersisted === false
+            ? result.text.trim()
+            : "";
+          if (!transcript) {
+            voiceProcessingRef.current = false;
+            setVoiceNotice("I did not catch a clear phrase. Listening again…");
+            scheduleHandsFreeListening(500);
+            return;
+          }
+          setInput(transcript);
+          await send(transcript, "hands-free");
+        })();
+      };
+      recorder.onerror = () => {
+        stopLocalCapture(true);
+        setListening(false);
+        handsFreeRef.current = false;
+        setHandsFree(false);
+        window.wellbeingDesktop?.disarmMicrophone();
+        setVoiceNotice("Local microphone capture stopped unexpectedly. Nothing was saved; text conversation remains available.");
+      };
+      const samples = analyser ? new Uint8Array(analyser.fftSize) : null;
+      const monitor = (now: number) => {
+        if (capture.discard || localCaptureRef.current !== capture) return;
+        const elapsed = now - capture.startedAt;
+        if (analyser && samples) {
+          analyser.getByteTimeDomainData(samples);
+          let squared = 0;
+          for (const value of samples) {
+            const normalized = (value - 128) / 128;
+            squared += normalized * normalized;
+          }
+          const rms = Math.sqrt(squared / samples.length);
+          if (rms >= 0.022) {
+            capture.heardSpeech = true;
+            capture.silentSince = null;
+          } else if (capture.heardSpeech && rms < 0.016) {
+            capture.silentSince ??= now;
+          }
+        } else if (elapsed >= 500) {
+          capture.heardSpeech = true;
+        }
+        if ((capture.heardSpeech && capture.silentSince !== null && now - capture.silentSince >= 950)
+          || elapsed >= 12_000
+          || (!capture.heardSpeech && elapsed >= 6_000)) {
+          stopLocalCapture(false);
+          return;
+        }
+        capture.animationFrame = window.requestAnimationFrame(monitor);
+      };
+      recorder.start(250);
+      setListening(true);
+      setVoiceNotice("Listening locally… pause when you finish. Tap the mic to stop.");
+      capture.animationFrame = window.requestAnimationFrame(monitor);
+    } catch {
+      stopLocalCapture(true);
+      setListening(false);
+      handsFreeRef.current = false;
+      setHandsFree(false);
+      window.wellbeingDesktop?.disarmMicrophone();
+      setVoiceNotice("Windows or the selected input device did not provide microphone access. Nothing was recorded; text conversation remains available.");
+    }
+  }
+
   async function startRecognition() {
-    if (!profileMutationAllowed() || !handsFreeRef.current || recognitionRef.current || voiceProcessingRef.current || speakingRef.current) return;
+    if (!profileMutationAllowed() || !handsFreeRef.current || recognitionRef.current || localCaptureRef.current || voiceProcessingRef.current || speakingRef.current) return;
     const requestedPrivacyEpoch = privacySessionGuardRef.current.capture();
+    if (window.wellbeingDesktop?.localSpeech) {
+      await startLocalRecognition(requestedPrivacyEpoch);
+      return;
+    }
     const Constructor = window.SpeechRecognition ?? window.webkitSpeechRecognition;
     if (!Constructor) {
       handsFreeRef.current = false;
@@ -1028,6 +1306,7 @@ export default function App() {
       if (restartListeningTimerRef.current !== null) window.clearTimeout(restartListeningTimerRef.current);
       restartListeningTimerRef.current = null;
       detachRecognitionInstance();
+      stopLocalCapture(true);
       window.wellbeingDesktop?.disarmMicrophone();
       setListening(false);
       setVoiceNotice("Hands-free talk stopped. You can keep typing.");
@@ -1097,6 +1376,27 @@ export default function App() {
     if (!profileMutationAllowed()) return;
     updateProfile((current) => ({ ...current, theme }));
     setModelNotice(`${theme === "system" ? "System appearance" : `${theme[0].toUpperCase()}${theme.slice(1)} appearance`} · saved locally`);
+  }
+
+  function saveCompanionName() {
+    if (!profileMutationAllowed()) return;
+    const nextName = cleanCompanionName(settingsCompanionName);
+    if (!nextName) {
+      setAccessProblem("Use 1–40 letters or numbers, with spaces, apostrophes, or hyphens. The companion remains synthetic and cannot use a human-role title.");
+      return;
+    }
+    setAccessProblem("");
+    updateProfile((current) => ({ ...current, companionName: nextName }));
+    setSettingsCompanionName(nextName);
+    setModelNotice(`${nextName} · companion name saved only in this private device profile`);
+  }
+
+  function resetCompanionName() {
+    if (!profileMutationAllowed()) return;
+    setAccessProblem("");
+    updateProfile((current) => ({ ...current, companionName: DEFAULT_COMPANION_NAME }));
+    setSettingsCompanionName("");
+    setModelNotice("Companion · neutral name restored in this private device profile");
   }
 
   function setLearningEnabled(enabled: boolean) {
@@ -1240,6 +1540,15 @@ export default function App() {
       accessRoleRef.current = targetRole;
       setAccessRole(targetRole);
       commitProfile(openedProfile);
+      if (desktopFirstRunRef.current && targetRole === "primary" && !openedProfile.onboardingCompleted) {
+        setOnboardingName(openedProfile.preferredName);
+        setOnboardingCompanionName(openedProfile.companionName === DEFAULT_COMPANION_NAME ? "" : openedProfile.companionName);
+        setOnboardingVoice(openedProfile.voice === "calm-masculine" ? "calm-masculine" : "soft-feminine");
+        setOnboardingTheme(openedProfile.theme === "light" || openedProfile.theme === "dark" ? openedProfile.theme : "medium");
+        setOnboardingAudioEnabled(openedProfile.speechEnabled);
+        setOnboardingStep(0);
+        setOnboardingOpen(true);
+      }
       clearTransientConversationState();
       setUnlockPassword("");
       lockedRef.current = false;
@@ -1263,7 +1572,7 @@ export default function App() {
         setCharacterOnlyMode(result.mode === "character");
         setCompactChatVisible(result.mode !== "character");
         setAlwaysOnTop(result.alwaysOnTop);
-        setCompactNotice(result.mode === "character" ? "Character-only corner mode is ready." : result.mode === "compact" ? "Work-beside-me mode is ready." : "Full companion restored.");
+        setCompactNotice(result.mode === "character" ? "Orb-only corner mode is ready." : result.mode === "compact" ? "Work-beside-me mode is ready." : "Full companion restored.");
         return;
       } catch {
         setCompactNotice("The native window could not change layout. Your conversation is unchanged.");
@@ -1273,7 +1582,7 @@ export default function App() {
     setCompactMode(mode !== "full");
     setCharacterOnlyMode(mode === "character");
     setCompactChatVisible(mode !== "character");
-    setCompactNotice(mode === "character" ? "Character-only preview is active." : mode === "compact" ? "Compact preview is active. Native resizing is available in the installed app." : "Full companion restored.");
+    setCompactNotice(mode === "character" ? "Orb-only preview is active." : mode === "compact" ? "Compact preview is active. Native resizing is available in the installed app." : "Full companion restored.");
   }
 
   async function toggleAlwaysOnTop() {
@@ -1301,6 +1610,90 @@ export default function App() {
   function toggleCompactPanel(panel: CompactPanel) {
     setCompactPanel((current) => current === panel ? null : panel);
     if (characterOnlyMode) setCompactChatVisible(false);
+  }
+
+  async function completeOnboarding() {
+    const preferredName = cleanPreferredName(onboardingName);
+    const companionName = companionNameFromOptionalInput(onboardingCompanionName);
+    if (!preferredName) {
+      setOnboardingProblem("Please enter the name you want your companion to use.");
+      setOnboardingStep(0);
+      return;
+    }
+    if (!companionName) {
+      setOnboardingProblem("Use 1–40 letters or numbers for the companion name, with spaces, apostrophes, or hyphens—or leave it blank to use Companion.");
+      setOnboardingStep(0);
+      return;
+    }
+    setOnboardingProblem("");
+    const introduction = personalizedOpeningTurn(preferredName, companionName);
+    const nextProfile: CompanionProfile = {
+      ...profileRef.current,
+      onboardingCompleted: false,
+      preferredName,
+      companionName,
+      voice: onboardingVoice,
+      theme: onboardingTheme,
+      speechEnabled: onboardingAudioEnabled,
+      speechPreferenceSet: true,
+    };
+    pendingOnboardingIntroductionRef.current = introduction;
+    commitProfile(nextProfile);
+    openingSpeechAttemptedRef.current = true;
+    setOnboardingCompleting(true);
+    setOnboardingVoiceFailed(false);
+    if (onboardingAudioEnabled) {
+      onboardingIntroPendingRef.current = true;
+      onboardingIntroSpokeRef.current = false;
+      queueSpokenReply(introduction.text);
+      return;
+    }
+    await enterMainAfterOnboarding("text-only");
+  }
+
+  async function enterMainAfterOnboarding(completion: "spoken" | "text-only") {
+    const introduction = pendingOnboardingIntroductionRef.current;
+    pendingOnboardingIntroductionRef.current = null;
+    updateProfile((current) => ({
+      ...current,
+      onboardingCompleted: true,
+      turns: introduction
+        ? (current.turns.length <= 1 ? [introduction] : [...current.turns, introduction])
+        : current.turns,
+    }));
+    onboardingIntroPendingRef.current = false;
+    onboardingIntroSpokeRef.current = false;
+    pendingSpokenReplyRef.current = null;
+    setOnboardingCompleting(false);
+    setOnboardingVoiceFailed(false);
+    setOnboardingOpen(false);
+    if (!onboardingMicrophoneEnabled) {
+      setVoiceNotice(completion === "spoken"
+        ? "Welcome spoken with the selected local voice. Microphone setup was skipped."
+        : "Welcome shown as text. Voice and microphone remain off until you choose to enable them.");
+      return;
+    }
+    const permissionGranted = window.wellbeingDesktop
+      ? await window.wellbeingDesktop.requestHandsFreePermission().catch(() => false)
+      : true;
+    if (!permissionGranted || !profileMutationAllowed()) {
+      window.wellbeingDesktop?.disarmMicrophone();
+      setVoiceNotice("Microphone permission was not granted. Nothing was recorded; text conversation remains available.");
+      return;
+    }
+    handsFreeRef.current = true;
+    setHandsFree(true);
+    setVoiceNotice("Welcome complete. Hands-free listening is starting. Windows may still ask for its own microphone permission.");
+    scheduleHandsFreeListening(100);
+  }
+
+  function continueOnboardingWithTextOnly() {
+    onboardingIntroPendingRef.current = false;
+    onboardingIntroSpokeRef.current = false;
+    pendingSpokenReplyRef.current = null;
+    updateProfile((current) => ({ ...current, speechEnabled: false, speechPreferenceSet: true }));
+    cancelSpokenReply(false);
+    void enterMainAfterOnboarding("text-only");
   }
 
   if (locked) {
@@ -1344,11 +1737,94 @@ export default function App() {
     );
   }
 
+  if (onboardingOpen && accessRole === "primary") {
+    return (
+      <main className="onboarding-shell" aria-labelledby="onboarding-title">
+        <section className="onboarding-character" aria-label="Your temporary animated companion orb preview">
+          <ReactiveCompanionOrb
+            listening={false}
+            thinking={onboardingCompleting && !speaking}
+            speaking={speaking}
+            playbackMotion={speechMotion}
+            label="Temporary animated companion orb during setup"
+          />
+          <p><strong>Private by design</strong><span>Conversation, microphone audio, and voice stay on this device.</span></p>
+        </section>
+        <section className="onboarding-card">
+          <header>
+            <p className="eyebrow">WELCOME · STEP {onboardingStep + 1} OF 4</p>
+            <div className="onboarding-progress" aria-label={`Setup step ${onboardingStep + 1} of 4`}>
+              {[0, 1, 2, 3].map((step) => <i key={step} className={step <= onboardingStep ? "complete" : ""} />)}
+            </div>
+          </header>
+
+          {onboardingStep === 0 && <div className="onboarding-page">
+            <h1 id="onboarding-title">What should I call you?</h1>
+            <p>This name is saved only in your private local profile. You can change or forget it later.</p>
+            <label className="onboarding-name"><span>Preferred name</span><input autoFocus maxLength={40} autoComplete="nickname" value={onboardingName} onChange={(event) => setOnboardingName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && cleanPreferredName(onboardingName)) setOnboardingStep(1); }} /></label>
+            <label className="onboarding-name"><span>Your companion’s name (optional)</span><input maxLength={40} autoComplete="off" placeholder={DEFAULT_COMPANION_NAME} value={onboardingCompanionName} onChange={(event) => setOnboardingCompanionName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && cleanPreferredName(onboardingName) && onboardingCompanionNameValid) setOnboardingStep(1); }} /></label>
+            <p className="onboarding-name-note">Leave this blank to use the neutral name “Companion.” The name stays in this private device profile, and the companion never claims to be human.</p>
+          </div>}
+
+          {onboardingStep === 1 && <div className="onboarding-page">
+            <h1 id="onboarding-title">Choose a local voice.</h1>
+            <p>Both choices are original synthetic voices. The app never substitutes a browser or Windows system voice.</p>
+            <fieldset className="onboarding-options voice"><legend>Voice</legend>
+              <label className={onboardingVoice === "soft-feminine" ? "selected" : ""}><input type="radio" name="onboarding-voice" checked={onboardingVoice === "soft-feminine"} onChange={() => setOnboardingVoice("soft-feminine")} /><span className="voice-avatar-swatch warm-plum" aria-hidden="true"><i /></span><span><strong>Soft female</strong><small>Gentle and welcoming</small></span></label>
+              <label className={onboardingVoice === "calm-masculine" ? "selected" : ""}><input type="radio" name="onboarding-voice" checked={onboardingVoice === "calm-masculine"} onChange={() => setOnboardingVoice("calm-masculine")} /><span className="voice-avatar-swatch light-blue" aria-hidden="true"><i /></span><span><strong>Warm male</strong><small>Lower and steady</small></span></label>
+            </fieldset>
+            <label className="onboarding-toggle"><span><strong>Speak replies aloud</strong><small>The full reply always remains readable.</small></span><input type="checkbox" checked={onboardingAudioEnabled} onChange={(event) => setOnboardingAudioEnabled(event.target.checked)} /></label>
+          </div>}
+
+          {onboardingStep === 2 && <div className="onboarding-page">
+            <h1 id="onboarding-title">Choose your appearance.</h1>
+            <p>You can switch themes later in Settings.</p>
+            <fieldset className="onboarding-options themes"><legend>Theme</legend>
+              {(["light", "medium", "dark"] as const).map((theme) => <label key={theme} className={onboardingTheme === theme ? "selected" : ""}><input type="radio" name="onboarding-theme" checked={onboardingTheme === theme} onChange={() => setOnboardingTheme(theme)} /><span className={`theme-swatch ${theme}`} aria-hidden="true"><i /><i /><i /></span><span><strong>{theme === "medium" ? "Default / medium" : theme[0].toUpperCase() + theme.slice(1)}</strong><small>{theme === "medium" ? "Balanced color and contrast" : `${theme} appearance`}</small></span></label>)}
+            </fieldset>
+          </div>}
+
+          {onboardingStep === 3 && !onboardingCompleting && <div className="onboarding-page">
+            <h1 id="onboarding-title">Set up hands-free talk?</h1>
+            <div className="microphone-explanation"><span aria-hidden="true">●</span><div><strong>You stay in control of the microphone.</strong><p>If enabled, the app asks once for this app session, then Windows may show its own microphone permission prompt. Setup cannot silently grant or bypass Windows permission. Audio is transcribed locally, kept in memory only, and discarded after each turn.</p></div></div>
+            <fieldset className="onboarding-options microphone"><legend>Microphone choice</legend>
+              <label className={onboardingMicrophoneEnabled ? "selected" : ""}><input type="radio" name="onboarding-microphone" checked={onboardingMicrophoneEnabled} onChange={() => setOnboardingMicrophoneEnabled(true)} /><span><strong>Enable after setup</strong><small>Ask for permission, then listen locally</small></span></label>
+              <label className={!onboardingMicrophoneEnabled ? "selected" : ""}><input type="radio" name="onboarding-microphone" checked={!onboardingMicrophoneEnabled} onChange={() => setOnboardingMicrophoneEnabled(false)} /><span><strong>Not now</strong><small>Typing works without microphone access</small></span></label>
+            </fieldset>
+          </div>}
+
+          {onboardingStep === 3 && onboardingCompleting && <div className="onboarding-page onboarding-warmup" aria-live="polite">
+            <h1 id="onboarding-title">Preparing your welcome.</h1>
+            <div className={`warmup-orb${speaking ? " speaking" : ""}`} aria-hidden="true"><i /><i /><i /></div>
+            {pendingOnboardingIntroductionRef.current && <p className="onboarding-introduction-text">{pendingOnboardingIntroductionRef.current.text}</p>}
+            <p>{speaking
+              ? "Your selected local synthetic voice is speaking now. The temporary orb follows the sanitized playback energy."
+              : onboardingVoiceFailed
+                ? "The local voice could not begin. No browser or Windows substitute was used."
+                : localVoiceState === "ready"
+                  ? "The selected voice is ready and generating the private local welcome."
+                  : "The selected voice is warming locally. No microphone audio is being captured while you wait."}</p>
+            <div className="warmup-status"><span className={onboardingVoiceFailed ? "failed" : speaking ? "live" : "warming"} /> <strong>{onboardingVoiceFailed ? "Voice unavailable" : speaking ? "Welcome playing" : "Local voice warm-up in progress"}</strong></div>
+            {!speaking && <button type="button" className="secondary-action text-only-choice" onClick={continueOnboardingWithTextOnly}>Continue with text only</button>}
+          </div>}
+
+          {onboardingProblem && <p className="onboarding-problem" role="alert">{onboardingProblem}</p>}
+          {!onboardingCompleting && <footer>
+            <button type="button" className="secondary-action" disabled={onboardingStep === 0} onClick={() => setOnboardingStep((step) => Math.max(0, step - 1))}>Back</button>
+            {onboardingStep < 3
+              ? <button type="button" className="primary-action" disabled={onboardingStep === 0 && (!cleanPreferredName(onboardingName) || !onboardingCompanionNameValid)} onClick={() => setOnboardingStep((step) => Math.min(3, step + 1))}>Continue</button>
+              : <button type="button" className="primary-action" onClick={() => void completeOnboarding()}>{onboardingMicrophoneEnabled ? "Finish and request microphone" : "Finish setup"}</button>}
+          </footer>}
+        </section>
+      </main>
+    );
+  }
+
   if (compactMode) {
     return (
-      <main className={`compact-companion-shell${characterOnlyMode ? " character-only" : ""} safety-${lastSafety} expression-${expression}`} data-window-mode={characterOnlyMode ? "character" : "compact"} aria-label={characterOnlyMode ? "Character-only corner companion" : "Compact work beside me companion"}>
+      <main className={`compact-companion-shell${characterOnlyMode ? " character-only" : ""} safety-${lastSafety} expression-${expression}`} data-window-mode={characterOnlyMode ? "character" : "compact"} aria-label={characterOnlyMode ? "Orb-only corner companion" : "Compact work beside me companion"}>
         <header className="compact-titlebar">
-          <div><span className="status-dot" /><strong>{presenceMode}</strong><small>Private local companion</small></div>
+          <div><span className="status-dot" /><strong>{profile.companionName}</strong><small>{presenceMode} · private local companion</small></div>
           <div>
             <button type="button" className={alwaysOnTop ? "is-active" : ""} onClick={() => void toggleAlwaysOnTop()} aria-pressed={alwaysOnTop} aria-label={alwaysOnTop ? "Stop keeping companion above other windows" : "Keep companion above other windows"} title={alwaysOnTop ? "Unpin window" : "Always on top"}>⌖</button>
             <button type="button" onClick={() => void changeWindowMode("full")} aria-label="Restore full companion" title="Restore full companion">↗</button>
@@ -1356,9 +1832,9 @@ export default function App() {
           </div>
         </header>
 
-        <section className="compact-character-stage" aria-label="Live three-dimensional companion" onClick={() => { if (characterOnlyMode) setCompactChatVisible(true); }}>
+        <section className="compact-character-stage" aria-label="Live temporary companion orb" onClick={() => { if (characterOnlyMode) setCompactChatVisible(true); }}>
           <div className="compact-aurora" aria-hidden="true" />
-          <AnimatedMascot identity={mascotIdentity} expression={expression} alt="A large articulated three-dimensional lantern companion reacting beside your work" waving={waving} listening={listening} speaking={speaking} guiding={guiding} />
+          <ReactiveCompanionOrb listening={listening} thinking={modelBusy || guiding} speaking={speaking} playbackMotion={speechMotion} label="Temporary companion orb reacting beside your work" />
         </section>
 
         {compactPanel && <section className={`compact-panel compact-panel-${compactPanel}`} aria-label={`Compact ${compactPanel}`}>
@@ -1370,7 +1846,8 @@ export default function App() {
             {profile.memories.length === 0 ? <p className="compact-panel-empty">Nothing is saved yet. Memory grows naturally from conversation and stays in this device profile.</p> : profile.memories.slice(-4).reverse().map((entry) => <article key={entry.id}><div><span>{entry.kind}</span><strong>{entry.label}</strong><small>{entry.value}</small></div><button type="button" disabled={accessBusy} onClick={() => deleteMemory(entry.id)} aria-label={`Forget ${entry.label}`}>Forget</button></article>)}
           </div>}
           {compactPanel === "settings" && <div className="compact-settings-list">
-            <fieldset><legend>Appearance</legend><div className="compact-theme-buttons">{(["system", "light", "dark"] as const).map((theme) => <button type="button" key={theme} className={profile.theme === theme ? "selected" : ""} onClick={() => changeTheme(theme)} aria-pressed={profile.theme === theme}>{theme === "system" ? "Device" : theme[0].toUpperCase() + theme.slice(1)}</button>)}</div></fieldset>
+            <fieldset className="compact-name-settings"><legend>Companion name</legend><input aria-label="Companion name" maxLength={40} value={settingsCompanionName} placeholder={DEFAULT_COMPANION_NAME} onChange={(event) => setSettingsCompanionName(event.target.value)} /><div><button type="button" onClick={saveCompanionName} disabled={accessBusy}>Save name</button><button type="button" onClick={resetCompanionName} disabled={accessBusy}>Reset</button></div><small>Local to this private profile; this synthetic companion never claims human identity.</small></fieldset>
+            <fieldset><legend>Appearance</legend><div className="compact-theme-buttons">{(["light", "medium", "dark"] as const).map((theme) => <button type="button" key={theme} className={profile.theme === theme ? "selected" : ""} onClick={() => changeTheme(theme)} aria-pressed={profile.theme === theme}>{theme === "medium" ? "Default" : theme[0].toUpperCase() + theme.slice(1)}</button>)}</div></fieldset>
             <label><span><strong>Spoken replies</strong><small>Text always stays visible</small></span><input type="checkbox" checked={profile.speechEnabled} disabled={accessBusy} onChange={(event) => setSpokenRepliesEnabled(event.target.checked)} /></label>
             <label><span><strong>Learn from conversation</strong><small>Saved locally and reviewable</small></span><input type="checkbox" checked={profile.learningEnabled} disabled={accessBusy} onChange={(event) => setLearningEnabled(event.target.checked)} /></label>
             <label><span><strong>Interest packs</strong><small>Use remembered favorites gently</small></span><input type="checkbox" checked={profile.interestPacksEnabled} disabled={accessBusy} onChange={(event) => setInterestPacksEnabled(event.target.checked)} /></label>
@@ -1380,8 +1857,8 @@ export default function App() {
 
         {!compactPanel && (!characterOnlyMode || compactChatVisible || listening || speaking || Boolean(input.trim())) && <section className="compact-conversation" aria-label="Compact conversation">
           <div className="compact-transcript-heading"><strong>Conversation</strong><small>Newest below · scroll for full transcript</small></div>
-          <div className="compact-turns" aria-live="polite" aria-label="Full conversation transcript" ref={compactTurnsRef}>
-            {profile.turns.map((turn) => <article key={turn.id} className={`compact-turn ${turn.role} ${turn.safetyLevel}`}><span>{turn.role === "companion" ? "Companion" : "You"}</span><p>{turn.text}</p></article>)}
+          <div className="compact-turns" aria-live="polite" aria-label="Full conversation transcript" ref={compactTurnsRef} tabIndex={0}>
+            {profile.turns.map((turn, index) => <article ref={index === profile.turns.length - 1 ? latestCompactTurnRef : undefined} key={turn.id} className={`compact-turn ${turn.role} ${turn.safetyLevel}`}><span>{turn.role === "companion" ? profile.companionName : "You"}</span><p>{turn.text}</p></article>)}
           </div>
           <form className="compact-composer" onSubmit={submit}>
             <label className="sr-only" htmlFor="compact-message">Message</label>
@@ -1397,7 +1874,8 @@ export default function App() {
           <button type="button" className={compactPanel === "activities" ? "is-active" : ""} onClick={() => toggleCompactPanel("activities")} aria-expanded={compactPanel === "activities"} aria-label="Show activities and play" title="Play and activities">✦<small>Play</small></button>
           <button type="button" className={compactPanel === "memory" ? "is-active" : ""} onClick={() => toggleCompactPanel("memory")} aria-expanded={compactPanel === "memory"} aria-label="Show private memory" title="Memory">◇<small>Memory</small></button>
           <button type="button" className={compactPanel === "settings" ? "is-active" : ""} onClick={() => toggleCompactPanel("settings")} aria-expanded={compactPanel === "settings"} aria-label="Show quick settings" title="Settings">⚙<small>Settings</small></button>
-          <button type="button" className={characterOnlyMode ? "is-active" : ""} onClick={() => void changeWindowMode(characterOnlyMode ? "compact" : "character")} aria-pressed={characterOnlyMode} aria-label={characterOnlyMode ? "Show compact chat" : "Use character-only corner mode"} title={characterOnlyMode ? "Show compact chat" : "Character-only mode"}>◉<small>Character</small></button>
+          <PwaInstallControl compact />
+          <button type="button" className={characterOnlyMode ? "is-active" : ""} onClick={() => void changeWindowMode(characterOnlyMode ? "compact" : "character")} aria-pressed={characterOnlyMode} aria-label={characterOnlyMode ? "Show compact chat" : "Use orb-only corner mode"} title={characterOnlyMode ? "Show compact chat" : "Orb-only mode"}>◉<small>Orb</small></button>
           <button type="button" onClick={() => void changeWindowMode("full")} aria-label="Expand to full companion" title="Expand">↗<small>Expand</small></button>
           <button type="button" onClick={() => window.wellbeingDesktop?.hideWindow?.()} aria-label="Hide companion" title="Hide">×<small>Hide</small></button>
         </nav>
@@ -1410,7 +1888,7 @@ export default function App() {
       <aside className="rail" aria-label="Companion controls">
         <div className="brand-mark" aria-label="Private companion working title">
           <span className="brand-spark">✦</span>
-          <span className="brand-name">Companion<small>private space</small></span>
+          <span className="brand-name">{profile.companionName}<small>private space</small></span>
         </div>
         <nav>
           <button ref={talkButtonRef} className="rail-button active" aria-current="page" onClick={() => messageInputRef.current?.focus()}><span className="rail-icon">◉</span><span className="rail-copy"><strong>Talk</strong><small>Your shared space</small></span></button>
@@ -1429,6 +1907,7 @@ export default function App() {
           </div>
           <div className="top-actions">
             {accessRole === "guardian" && <span className="role-chip">Guardian space</span>}
+            <PwaInstallControl />
             <button className={`icon-button ${profile.speechEnabled ? "" : "muted"}`} disabled={accessBusy} onClick={() => setSpokenRepliesEnabled(!profile.speechEnabled)} aria-pressed={!profile.speechEnabled} aria-label={profile.speechEnabled ? "Mute spoken replies" : "Turn on spoken replies"}>{profile.speechEnabled ? "◖))" : "◖×"}</button>
             <button className="icon-button" type="button" onClick={() => void changeWindowMode("compact")} aria-label="Open compact work beside me mode" title="Work beside me">◫</button>
             <button className="avatar-button" onClick={() => setSettingsOpen(true)} aria-label="Open settings">{profile.preferredName?.[0]?.toUpperCase() ?? "ME"}</button>
@@ -1439,17 +1918,17 @@ export default function App() {
           <div className="presence-atmosphere" aria-hidden="true"><span /><span /><span /></div>
           <div className="orb one" /><div className="orb two" />
           <div className="mascot-theatre">
-            <p className="stage-kicker"><span /> REAL-TIME 3D PRESENCE</p>
+            <p className="stage-kicker"><span /> TEMPORARY ANIMATED ORB</p>
             <div className="mascot-wrap">
               <div className="mascot-halo" />
-              <AnimatedMascot identity={mascotIdentity} expression={expression} alt="An articulated three-dimensional lantern companion reacting in real time" waving={waving} listening={listening} speaking={speaking} guiding={guiding} />
+              <ReactiveCompanionOrb listening={listening} thinking={modelBusy || guiding} speaking={speaking} playbackMotion={speechMotion} label="Temporary companion orb reacting in real time" />
             </div>
-            <div className="stage-caption"><strong>{presenceMode}</strong><span>Articulated WebGL character · local visual state</span></div>
+            <div className="stage-caption"><strong>{presenceMode}</strong><span>Honest temporary orb · smooth local state and playback-energy response · not the future 3D character</span></div>
           </div>
           <div className="presence-copy">
             <div className="presence-label"><span className="status-dot" /> {presenceMode.toUpperCase()}</div>
             <h2>{presenceHeadline}</h2>
-            <p>{accessRole === "guardian" ? "This guardian conversation is encrypted separately and cannot reveal the primary user’s private space." : "A synthetic friend who listens and remembers without pretending to be biological. Typed conversation and saved memories stay in this device profile. Hands-free recognition may use your browser or operating-system speech service; you control deletion."}</p>
+            <p>{accessRole === "guardian" ? "This guardian conversation is encrypted separately and cannot reveal the primary user’s private space." : "A synthetic friend who listens and remembers without pretending to be biological. Typed conversation and saved memories stay in this device profile. In the installed app, each hands-free turn is transcribed locally from memory and discarded after use; Windows still controls microphone permission."}</p>
             <div className="presence-actions" aria-label="Start together">
               <button type="button" className="presence-action primary" onClick={() => messageInputRef.current?.focus()}><span>◉</span><strong>Talk with me</strong><small>Type anything</small></button>
               <button type="button" className="presence-action" disabled={modelBusy || accessBusy} onClick={() => void send("Let's do the 60-second reset")}><span>≈</span><strong>Breathe together</strong><small>One quiet minute</small></button>
@@ -1472,10 +1951,10 @@ export default function App() {
               <button className="text-button" onClick={() => setMemoryOpen(true)}>{profile.memories.length} memories →</button>
             </div>
 
-            <div className="turns" aria-live="polite" ref={turnsRef}>
-              {profile.turns.slice(-8).map((turn) => (
-                <article key={turn.id} className={`turn ${turn.role} ${turn.safetyLevel}`}>
-                  <div className="turn-meta">{turn.role === "companion" ? "Companion" : "You"}<time>{formatTime(turn.createdAt)}</time></div>
+            <div className="turns" aria-live="polite" aria-label="Recent conversation transcript" ref={turnsRef} tabIndex={0}>
+              {profile.turns.map((turn, index, visibleTurns) => (
+                <article ref={index === visibleTurns.length - 1 ? latestTurnRef : undefined} key={turn.id} className={`turn ${turn.role} ${turn.safetyLevel}`}>
+                  <div className="turn-meta">{turn.role === "companion" ? profile.companionName : "You"}<time>{formatTime(turn.createdAt)}</time></div>
                   <p>{turn.text}</p>
                 </article>
               ))}
@@ -1568,20 +2047,25 @@ export default function App() {
       <aside ref={settingsDrawerRef} role="dialog" aria-modal="true" className={`drawer ${settingsOpen ? "open" : ""}`} aria-hidden={!settingsOpen} inert={!settingsOpen} aria-label="Settings" onKeyDown={handleDrawerKeyDown}>
         <button className="drawer-close" onClick={() => setSettingsOpen(false)} aria-label="Close settings">×</button>
         <p className="eyebrow">SETTINGS</p><h2>Make the companion yours.</h2>
+        <section className="companion-name-settings" aria-labelledby="companion-name-heading">
+          <h3 id="companion-name-heading">Companion name</h3>
+          <p>Choose a Unicode name for this synthetic companion. It stays only in this private device profile and persists across restarts.</p>
+          <label><span>Name</span><input maxLength={40} autoComplete="off" value={settingsCompanionName} placeholder={DEFAULT_COMPANION_NAME} disabled={accessBusy} onChange={(event) => setSettingsCompanionName(event.target.value)} /></label>
+          <div><button className="secondary-action" type="button" disabled={accessBusy} onClick={saveCompanionName}>Save name</button><button className="text-button" type="button" disabled={accessBusy} onClick={resetCompanionName}>Reset to Companion</button></div>
+        </section>
         {accessRole === "guardian" && <div className="guardian-banner"><strong>Guardian space</strong><p>This is a separate conversation. Primary-user memories and transcripts are not available here.</p><button className="secondary-action" type="button" disabled={accessBusy} onClick={lockNow}>Lock guardian space</button></div>}
         <fieldset className="voice-choices"><legend>Local voice preset and appearance</legend>
-          <label className={profile.voice === "soft-feminine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "soft-feminine"} disabled={accessBusy} onChange={() => changeVoice("soft-feminine")} /><span className="voice-avatar-swatch warm-plum" aria-hidden="true"><i /></span><span><strong>Soft feminine</strong>Welcoming default</span></label>
-          <label className={profile.voice === "warm-neutral" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "warm-neutral"} disabled={accessBusy} onChange={() => changeVoice("warm-neutral")} /><span className="voice-avatar-swatch warm-plum" aria-hidden="true"><i /></span><span><strong>Warm neutral</strong>Future preset · text only</span></label>
-          <label className={profile.voice === "calm-masculine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "calm-masculine"} disabled={accessBusy} onChange={() => changeVoice("calm-masculine")} /><span className="voice-avatar-swatch light-blue" aria-hidden="true"><i /></span><span><strong>Calm masculine</strong>Lower, steady tone</span></label>
+          <label className={profile.voice === "soft-feminine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "soft-feminine"} disabled={accessBusy} onChange={() => changeVoice("soft-feminine")} /><span className="voice-avatar-swatch warm-plum" aria-hidden="true"><i /></span><span><strong>Soft female</strong>Gentle and welcoming</span></label>
+          <label className={profile.voice === "calm-masculine" ? "selected" : ""}><input type="radio" name="voice" checked={profile.voice === "calm-masculine"} disabled={accessBusy} onChange={() => changeVoice("calm-masculine")} /><span className="voice-avatar-swatch light-blue" aria-hidden="true"><i /></span><span><strong>Warm male</strong>Lower and steady</span></label>
         </fieldset>
         <fieldset className="theme-choices"><legend>Appearance</legend>
           <p>Follow this device by default, or keep a bold light or dark look for this private profile. You can also say “use dark theme,” “use light theme,” or “follow system.”</p>
           <div>
-            {(["system", "light", "dark"] as const).map((theme) => (
+            {(["light", "medium", "dark", "system"] as const).map((theme) => (
               <label key={theme} className={profile.theme === theme ? "selected" : ""}>
                 <input type="radio" name="theme" checked={profile.theme === theme} disabled={accessBusy} onChange={() => changeTheme(theme)} />
                 <span className={`theme-swatch ${theme}`} aria-hidden="true"><i /><i /><i /></span>
-                <strong>{theme === "system" ? "System default" : `${theme[0].toUpperCase()}${theme.slice(1)}`}</strong>
+                <strong>{theme === "system" ? "Follow device" : theme === "medium" ? "Default / medium" : `${theme[0].toUpperCase()}${theme.slice(1)}`}</strong>
                 <small>{theme === "system" ? `Following this device · ${effectiveTheme} now` : `${theme} on this profile`}</small>
               </label>
             ))}

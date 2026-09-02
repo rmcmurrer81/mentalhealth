@@ -1,6 +1,7 @@
 import type { CompanionProfile, MemoryKind, MemoryRecord } from "./types";
 import { medicationScheduleIntent } from "./reminders";
 import { normalizeThemePreference } from "./theme";
+import { DEFAULT_COMPANION_NAME, companionNameFromStoredProfile } from "./companion-name";
 
 const STORAGE_KEY = "humanity-companion-profile-v1";
 
@@ -677,14 +678,17 @@ export function forgetMemory(profile: CompanionProfile, memoryId: string): Compa
 
 export function defaultProfile(): CompanionProfile {
   return {
+    onboardingCompleted: false,
     preferredName: "",
+    companionName: DEFAULT_COMPANION_NAME,
     memories: [],
     medications: [],
     appointments: [],
     turns: [],
     voice: "soft-feminine",
-    theme: "system",
+    theme: "medium",
     speechEnabled: true,
+    speechPreferenceSet: false,
     learningEnabled: true,
     interestPacksEnabled: true,
     interests: [],
@@ -700,7 +704,19 @@ export function loadProfile(): CompanionProfile {
     const parsed: unknown = JSON.parse(raw);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return defaultProfile();
     const stored = parsed as Partial<CompanionProfile>;
-    return { ...defaultProfile(), ...stored, theme: normalizeThemePreference(stored.theme) };
+    return {
+      ...defaultProfile(),
+      ...stored,
+      onboardingCompleted: stored.onboardingCompleted === true,
+      companionName: companionNameFromStoredProfile(stored.companionName),
+      theme: normalizeThemePreference(stored.theme),
+      // Older packages stored a false value without recording whether the user
+      // chose mute or merely inherited an old default. Migrate that ambiguous
+      // state to the new default-on behavior once. A later explicit click is
+      // marked and therefore remains off across restarts.
+      speechEnabled: stored.speechPreferenceSet === true ? stored.speechEnabled !== false : true,
+      speechPreferenceSet: stored.speechPreferenceSet === true,
+    };
   } catch {
     return defaultProfile();
   }

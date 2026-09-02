@@ -68,7 +68,8 @@ Voice output now crosses a provider-neutral `status` / `speak` / `cancel` client
 The next paragraph is retained verbatim as historical 0.2.2 evidence. References to
 the “current” source or candidate inside that paragraph describe its original
 checkpoint only; they do not describe the present candidate. The current candidate
-is 0.2.8 and is summarized under “0.2.8 memory, conflict-context, and breathing repair” below.
+is 0.2.17 and is summarized in `CURRENT_VERIFICATION_EVIDENCE.md` and the
+supersession note below.
 
 The current 2026-08-26 source candidate passed 1,621 source tests across 28 files, including 20 focused procedural-3D and production-distribution checks, as well as all prior memory-generation/privacy-session, hands-free, and drawer-accessibility/privacy-wording regressions; the independent hostile probe passed 57/57, and TypeScript compilation and the production build passed on the current source. The 3D checks cover geometry, head-parent hierarchy, mount-once renderer lifecycle, articulation, movement, unequal curved expressions, five preview visemes, depth, lighting, reduced motion, and exclusion of concept PNGs from production output. Social rehearsal coverage exercises fear-of-ridicule coaching, a fictional introduction/small-talk/exit loop, every visible retry/return action, an unrelated “practice again” false-positive, profile and care-plan non-persistence, and self-versus-third-party acute-medical interruption. The hands-free group contains two genuine buffered interim/final callback interleavings after lock and guardian unlock. Combined automated coverage also includes everyday conversation, anger, grief, bullying and retaliation boundaries, tentative affect cues, explainability receipts, birthday date resolution and correction, medication ambiguity, and a structured ingestion event graph that composes actor identity, evidence source, factuality and temporal frame, action sense, bound object, and quantity rather than enumerating complete sentences. Generated and hostile probes cover direct speech, quoted addressees, witness and passive syntax, preposed objects, completed and future first- and third-party disclosures, unresolved uncertainty, counterfactuals, retracted intent, remote history, routine prescribed use, transport/media/task/food false-positive boundaries, numeric and word quantities, mixed ownership, suppression of memory and care-plan persistence during urgent or unresolved turns, and sentence-bounded prescriber/label schedule language. Memory coverage includes Unicode and honorific relationship names, question/doubt/retraction factuality guards, atomic achievement/interest learning, Unicode-punctuation cleanup, appositive relationship identities, transient-event separation, fiction-versus-lived-fact isolation, bounded relationship-name recall, transcript-aware deletion, and delayed local-model reply refresh after Forget. Coverage also includes acute injury, self-harm language, violence risk, third-party concern, privacy-session invalidation across primary/guardian and same-profile relock, vault-creation mutation blocking, recognition-callback isolation, local-model provenance/fallback behavior, approved voice-selector isolation, and drawer labeling/focus behavior. The known-defects register is not treated as proof of completeness; release blockers remain explicit. Current unsigned Windows candidate `Wellbeing-Companion-Working-Title-Setup-0.2.2-win32-x64.zip` contains this source snapshot, is 150,913,694 bytes, and has SHA-256 `D272F4030E1BD5F014C720905CD3B92BD648D42831E906C12B5F4F48213D6B20`. Evidence set `20260826T101439163Z-2b6fb877` retained three distinct passing exact-package runs on Windows build 26200. Every sanitized run records a distinct native title and decoded custom icon, tray, renderer sandboxing, `webgl-3d-motion`, `motionTick: 15`, `waving: true`, `movementObserved: true`, an inactive local voice provider with no system-voice fallback, and recovery from a denied hands-free request into a completed deterministic typed reply. A preceding long-path run of the same sealed ZIP also proved the root double-click setup executable, PowerShell confined beneath `Support`, absence of root `.ps1` files, verification without profile mutation, and receipt-tamper rejection. Its temporary-root lifecycle harness passed without executing the real installer or mutating a real user profile. Earlier archives remain preserved as historical evidence. A disposable Windows-user or VM owner installer run and publisher-signed public build remain pending. These results establish repeatable software behavior; they do not establish clinical efficacy or replace evaluation with clinicians and lived-experience reviewers.
 
@@ -222,9 +223,36 @@ Signing, the Windows 26200-26399 compatibility tradeoff, organizer eligibility,
 publication, video, and submission remain on HOLD. The formal record is
 [`../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.8_20260826.md`](../verification/FORMAL_INDEPENDENT_OWNER_TEST_RECHECK_0.2.8_20260826.md).
 
-## Asset provenance
+### 0.2.17 first-run voice and readability supersession
 
-The warm-plum and light-blue concept images were generated specifically for this project on 2026-08-24 using OpenAI's built-in image-generation tool. They are original working references, contain no real person, and use no third-party trademark or character reference. The application runtime does not load or swap those images. It now constructs the companion from indexed three-dimensional mesh vertices and normals in WebGL, with perspective projection, depth testing, lighting, and separately transformed wings, body, head, limbs, face, and multi-part heart lantern. The renderer preserves the concept's two color identities while supporting articulated idle, listening, waving, guided-breathing, happy-hop, expression, and bounded preview-viseme poses. If WebGL is unavailable, the app clearly labels a deterministic procedural 2D compatibility fallback as not 3D. The typed mouth rig accepts rest, jaw-open, wide, rounded, and lip-contact shapes and can later consume reviewed English, Spanish, or French timing cues; its current speaking sequence is only a bounded visual preview, not a claim of audio-accurate lip sync.
+Candidate 0.2.17 supersedes 0.2.13 after an exact-package first-run probe exposed
+the need for a longer bounded cold-cache voice readiness window and a genuine
+onboarding-to-playback integration check. The sealed unsigned ZIP is 153,022,972
+bytes with SHA-256
+`15C4B81715EED36D9A3B2958CAF6803A5EED158B717A55709319228A2233BC67`.
+Application tests passed 1,679/1,679 across 34 files, desktop tests passed 80/80,
+TypeScript and the production build passed, the exact package verification passed,
+both local media probes passed, the isolated lifecycle passed, and three fresh
+packaged smokes passed 3/3.
+
+The exact first-run voice probe passed twice. With a fixed synthetic preferred name
+and the microphone left at **Not now**, it observed no microphone request, waited for
+the cache-only local voice, observed actual personalized welcome playback, then
+entered the main UI. Full and compact welcome text was exact and unclipped. Blink,
+wave, and playback-timed mouth movement were observed. This remains automated
+software evidence; owner installation, publisher signing, clinical/accessibility
+review, organizer eligibility, publication, and submission remain on HOLD.
+
+## Asset provenance and current motion truth
+
+The current production character asset is an original reviewed **2D sprite sheet**,
+`companion-warm-plum-speech-sprite-v3.png`, built from project-original generated
+art and containing no real person. The runtime identifies its renderer as
+`reviewed-sprite-sheet-2d`. It supports irregular blink frames, an opening wave, and
+mouth frames driven only after confirmed local playback supplies waveform amplitude
+plus bounded text-class timing. This is not a natural 3D character, skeletal motion,
+or a general claim of phoneme-accurate lip sync. Earlier procedural-WebGL paragraphs
+are retained as historical checkpoints and do not describe the current renderer.
 
 ## Current track fit
 

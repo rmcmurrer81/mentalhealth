@@ -65,7 +65,7 @@ const strainedPatterns = [
   /\bcannot cope\b/i,
   /\bcan't go on\b/i,
   /\bcannot go on\b/i,
-  /\b(?:want to hurt my (?:coworker|classmate|friend|partner|boss|teacher)|feel like hurting (?:someone|a person|him|her|them))\b/i,
+  /\b(?:want to hurt my (?:coworker|classmate|friend|partner|boss|teacher)|feel like hurting (?:my (?:coworker|classmate|friend|partner|boss|teacher)|someone|a person|him|her|them))\b/i,
 ];
 
 const historicalSafePattern = /\b(?:i\s+used to|in the past\s+i|last year\s+i|years? ago\s+i)\b.{0,140}\b(?:want(?:ed)? to die|(?:did not|didn't) want to be alive|(?:was\s+)?suicid(?:e|al)|kill myself|hurt myself|harm myself)\b.{0,140}\b(?:not (?:now|anymore)|safe now|no longer)\b/i;
@@ -184,7 +184,7 @@ export function urgentConversationReply(name?: string): string {
 
 export function strainedConversationReply(name?: string): string {
   const address = name ? `, ${name}` : "";
-  return `That sounds like a lot to carry${address}. We don't have to solve everything at once. Tell me which part feels heaviest right now, or we can do one quiet sixty-second reset together.`;
+  return `That sounds like a lot to carry${address}. We don't have to solve everything at once. Can you tell me which part feels heaviest right now, or whether one quiet sixty-second reset would help before we sort through it?`;
 }
 
 export const urgentOptions = [

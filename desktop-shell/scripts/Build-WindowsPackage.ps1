@@ -5,7 +5,17 @@ param(
     [string]$ElectronVersion = '43.4.1',
 
     [Parameter()]
-    [string]$PublisherSignedExecutable
+    [string]$PublisherSignedExecutable,
+
+    [Parameter()]
+    [AllowEmptyString()]
+    [ValidatePattern('^$|^[A-Fa-f0-9]{64}$')]
+    [string]$PublisherSignedExecutableSha256 = '',
+
+    [Parameter()]
+    [AllowEmptyString()]
+    [ValidatePattern('^$|^[A-Fa-f0-9]{40}$')]
+    [string]$PublisherSignerThumbprint = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,6 +35,9 @@ $archivePath = Join-Path $cacheRoot $archiveName
 $releaseUrl = "https://github.com/electron/electron/releases/download/v$ElectronVersion/$archiveName"
 $knownArchiveHashes = @{
     '43.4.1' = 'C2EF9A5F65472C34D14BD3E67B7D14E66B0C01F124ABA45263D6A4232160E13A'
+}
+$knownOfficialExecutableHashes = @{
+    '43.4.1' = 'E885FFC2A09DAB4C14DE706E3662A5929D1E65EA4EA347C56FD0964640EB923B'
 }
 $webDistRoot = Join-Path $sourceRoot 'dist'
 $webIndex = Join-Path $webDistRoot 'index.html'
@@ -136,6 +149,17 @@ function Assert-ArchivePathBudget {
     }
 }
 
+if ($PublisherSignedExecutable) {
+    if ([string]::IsNullOrWhiteSpace($PublisherSignedExecutableSha256) -or [string]::IsNullOrWhiteSpace($PublisherSignerThumbprint)) {
+        throw 'A publisher-signed runtime requires both PublisherSignedExecutableSha256 and PublisherSignerThumbprint.'
+    }
+    if (-not (Test-Path -LiteralPath $PublisherSignedExecutable -PathType Leaf)) {
+        throw "The publisher-signed runtime does not exist: $PublisherSignedExecutable"
+    }
+} elseif (-not [string]::IsNullOrWhiteSpace($PublisherSignedExecutableSha256) -or -not [string]::IsNullOrWhiteSpace($PublisherSignerThumbprint)) {
+    throw 'PublisherSignedExecutableSha256 and PublisherSignerThumbprint are valid only with PublisherSignedExecutable.'
+}
+
 if (-not (Test-Path -LiteralPath $webIndex -PathType Leaf)) {
     throw "The production Vite build is missing: $webIndex. Run pnpm build first."
 }
@@ -172,10 +196,35 @@ Expand-Archive -LiteralPath $archivePath -DestinationPath $stagingRoot -Force
 
 $upstreamExecutable = Join-Path $stagingRoot 'electron.exe'
 $upstreamSignature = Get-AuthenticodeSignature -LiteralPath $upstreamExecutable
+$officialUpstreamSignature = $upstreamSignature
+$upstreamExecutableBytes = [long](Get-Item -LiteralPath $upstreamExecutable).Length
+$upstreamExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $upstreamExecutable).Hash.ToUpperInvariant()
+$expectedOfficialExecutableHash = $knownOfficialExecutableHashes[$ElectronVersion]
+if ($upstreamExecutableHash -ne $expectedOfficialExecutableHash) {
+    throw "Official Electron executable checksum mismatch. Expected $expectedOfficialExecutableHash but received $upstreamExecutableHash."
+}
+$runtimeSource = 'official-electron-release-archive'
+$selectedRuntimeSourceHash = $upstreamExecutableHash
+$expectedPublisherRuntimeHash = $null
+$expectedPublisherSignerThumbprint = $null
 if ($PublisherSignedExecutable) {
+    if ([string]::IsNullOrWhiteSpace($PublisherSignedExecutableSha256) -or [string]::IsNullOrWhiteSpace($PublisherSignerThumbprint)) {
+        throw 'A publisher-signed runtime requires both PublisherSignedExecutableSha256 and PublisherSignerThumbprint.'
+    }
     $signedRuntime = (Resolve-Path -LiteralPath $PublisherSignedExecutable).Path
+    $signedRuntimeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $signedRuntime).Hash.ToUpperInvariant()
+    $expectedPublisherRuntimeHash = $PublisherSignedExecutableSha256.ToUpperInvariant()
+    if ($signedRuntimeHash -ne $expectedPublisherRuntimeHash) {
+        throw "The supplied publisher runtime does not match PublisherSignedExecutableSha256. Expected $expectedPublisherRuntimeHash but received $signedRuntimeHash."
+    }
     $signedSignature = Get-AuthenticodeSignature -LiteralPath $signedRuntime
     if ($signedSignature.Status -ne 'Valid') { throw "The supplied publisher runtime is not Authenticode-valid (status: $($signedSignature.Status))." }
+    if (-not $signedSignature.SignerCertificate) { throw 'The supplied publisher runtime has no signer certificate.' }
+    $expectedPublisherSignerThumbprint = $PublisherSignerThumbprint.ToUpperInvariant()
+    $actualPublisherSignerThumbprint = $signedSignature.SignerCertificate.Thumbprint.ToUpperInvariant()
+    if ($actualPublisherSignerThumbprint -ne $expectedPublisherSignerThumbprint) {
+        throw "The supplied publisher runtime signer does not match PublisherSignerThumbprint. Expected $expectedPublisherSignerThumbprint but received $actualPublisherSignerThumbprint."
+    }
     $signedVersion = (Get-Item -LiteralPath $signedRuntime).VersionInfo.ProductVersion
     $signedDescription = (Get-Item -LiteralPath $signedRuntime).VersionInfo.FileDescription
     if (-not $signedVersion.StartsWith($ElectronVersion, [StringComparison]::OrdinalIgnoreCase) -or $signedDescription.IndexOf('Electron', [StringComparison]::OrdinalIgnoreCase) -lt 0) {
@@ -183,6 +232,10 @@ if ($PublisherSignedExecutable) {
     }
     Copy-Item -LiteralPath $signedRuntime -Destination $upstreamExecutable -Force
     $upstreamSignature = Get-AuthenticodeSignature -LiteralPath $upstreamExecutable
+    $runtimeSource = 'caller-supplied-hash-and-signer-bound-publisher-runtime'
+    $selectedRuntimeSourceHash = $signedRuntimeHash
+} elseif (-not [string]::IsNullOrWhiteSpace($PublisherSignedExecutableSha256) -or -not [string]::IsNullOrWhiteSpace($PublisherSignerThumbprint)) {
+    throw 'PublisherSignedExecutableSha256 and PublisherSignerThumbprint are valid only with PublisherSignedExecutable.'
 }
 if ($upstreamSignature.Status -notin @('Valid', 'NotSigned')) {
     throw "The Electron executable has an unexpected signature state: $($upstreamSignature.Status)."
@@ -191,6 +244,9 @@ $companionExecutable = Join-Path $stagingRoot 'WellbeingCompanionWorkingTitle.ex
 Move-Item -LiteralPath $upstreamExecutable -Destination $companionExecutable
 $renamedSignature = Get-AuthenticodeSignature -LiteralPath $companionExecutable
 if ($renamedSignature.Status.ToString() -ne $upstreamSignature.Status.ToString()) { throw 'Renaming Electron unexpectedly changed its signature state.' }
+$renamedExecutableHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $companionExecutable).Hash.ToUpperInvariant()
+if ($renamedExecutableHash -ne $selectedRuntimeSourceHash) { throw 'Renaming Electron unexpectedly changed its bytes.' }
+$runtimeByteIdentityPreserved = $true
 
 $defaultApp = Join-Path $stagingRoot 'resources\default_app.asar'
 if (Test-Path -LiteralPath $defaultApp -PathType Leaf) { Remove-Item -LiteralPath $defaultApp -Force }
@@ -212,20 +268,56 @@ $receipt = [ordered]@{
     packageVersion = $packageVersion
     electronVersion = $ElectronVersion
     electronArchiveSha256 = $actualArchiveHash
-    executableSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $companionExecutable).Hash.ToUpperInvariant()
+    executableSha256 = $renamedExecutableHash
     executableSignatureStatus = $renamedSignature.Status.ToString()
     executableSigner = if ($renamedSignature.SignerCertificate) { $renamedSignature.SignerCertificate.Subject } else { $null }
     archiveHashSource = "https://github.com/electron/electron/releases/download/v$ElectronVersion/SHASUMS256.txt"
     publisherBoundary = if ($renamedSignature.Status -eq 'Valid') {
-        'Caller supplied an Authenticode-valid Electron runtime. Verify that its signer is the intended Kira Labs publisher.'
+        'Caller supplied an exact SHA-256- and signer-thumbprint-bound Authenticode-valid Electron runtime. This authenticates the runtime signer only; the setup launcher and final distribution container require their own verified signing boundary.'
     } else {
-        'Official Electron archive hash verified; executable is not Kira Labs publisher-signed. Installer requires explicit acknowledgement.'
+        'The pinned official Electron release archive and its electron.exe were hash verified and the runtime was preserved byte-for-byte through rename, but that upstream executable is itself Authenticode NotSigned. Avoiding resource mutation cannot create a Microsoft or Electron trust chain. The setup notes disclose this state and Windows may still show its own reputation or Smart App Control warning. Publisher or Microsoft Store package signing remains required for public release.'
+    }
+    releaseSecurity = [ordered]@{
+        officialElectronArchive = [ordered]@{
+            fileName = $archiveName
+            sha256 = $actualArchiveHash
+            expectedSha256 = $expectedArchiveHash
+            hashSource = "https://github.com/electron/electron/releases/download/v$ElectronVersion/SHASUMS256.txt"
+        }
+        officialElectronHost = [ordered]@{
+            fileName = 'electron.exe'
+            bytes = $upstreamExecutableBytes
+            sha256 = $upstreamExecutableHash
+            expectedSha256 = $expectedOfficialExecutableHash
+            authenticodeStatus = $officialUpstreamSignature.Status.ToString()
+            signerSubject = if ($officialUpstreamSignature.SignerCertificate) { $officialUpstreamSignature.SignerCertificate.Subject } else { $null }
+            signerThumbprint = if ($officialUpstreamSignature.SignerCertificate) { $officialUpstreamSignature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { $null }
+        }
+        selectedRuntimeHost = [ordered]@{
+            source = $runtimeSource
+            sourceSha256 = $selectedRuntimeSourceHash
+            packagedFileName = 'WellbeingCompanionWorkingTitle.exe'
+            packagedSha256 = $renamedExecutableHash
+            byteIdentityPreserved = $runtimeByteIdentityPreserved
+            resourceMutationApplied = $false
+            fileRenameApplied = $true
+            renameChangedBytes = $false
+            authenticodeStatus = $renamedSignature.Status.ToString()
+            signerSubject = if ($renamedSignature.SignerCertificate) { $renamedSignature.SignerCertificate.Subject } else { $null }
+            signerThumbprint = if ($renamedSignature.SignerCertificate) { $renamedSignature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { $null }
+            expectedPublisherRuntimeSha256 = $expectedPublisherRuntimeHash
+            expectedPublisherSignerThumbprint = $expectedPublisherSignerThumbprint
+        }
+        runtimeAuthenticodeValid = [bool]($renamedSignature.Status -eq 'Valid')
+        publicReleaseTrusted = $false
+        setupLauncherSeparatelySigned = $false
+        normalSecurityBypassUsed = $false
     }
     bundledWebRuntime = $true
     bundledRuntimeOrigin = 'http://127.0.0.1:43724/'
     bundledRuntimeModules = @('node:http static server', 'Vite-bundled React client')
-    offlineBoundary = 'The deterministic conversation, memory, reminders, vault, and built assets run from a fixed loopback-only static service. Optional Ollama is separate, fixed to 127.0.0.1:11434, and steady-only.'
-    permissionBoundary = 'Microphone is armed only after explicit hands-free IPC and native confirmation; camera, display capture, device permissions, downloads, and non-loopback renderer requests are denied.'
+    offlineBoundary = 'The deterministic conversation, memory, reminders, vault, built assets, optional Chatterbox output, and installed faster-whisper speech input run locally. Voice/speech hosts bind ephemeral authenticated loopback ports and require existing offline caches. Optional Ollama is separate, fixed to 127.0.0.1:11434, and steady-only.'
+    permissionBoundary = 'Microphone is armed only after explicit hands-free IPC and native confirmation; bounded audio is transcribed locally in memory and discarded after the turn. Camera, display capture, device permissions, downloads, and non-loopback renderer requests are denied.'
     childProcessCompatibilityBoundary = 'On Windows builds 26200-26399, Electron 43 uses a disclosed GPU and renderer process-sandbox compatibility path after repeated child-process launch failures. Context isolation stays enabled, Node integration and webviews stay disabled, and renderer navigation remains fixed to 127.0.0.1.'
     integrity = [ordered]@{
         algorithm = 'SHA-256'
@@ -253,6 +345,10 @@ $setupLauncherPath = Join-Path $setupRoot 'SETUP-WELLBEING-COMPANION.exe'
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $setupLauncherPath -PathType Leaf)) {
     throw 'Wellbeing Companion could not compile the double-click Windows setup launcher.'
 }
+$setupLauncherSignature = Get-AuthenticodeSignature -LiteralPath $setupLauncherPath
+if ($setupLauncherSignature.Status -notin @('Valid', 'NotSigned')) {
+    throw "The setup launcher has an unexpected signature state: $($setupLauncherSignature.Status)."
+}
 
 $setupReceiptPath = Join-Path $setupRoot 'SETUP-RECEIPT.json'
 $setupFiles = Get-TreeManifest -Root $setupRoot -ExcludedRelativePaths @('SETUP-RECEIPT.json')
@@ -263,6 +359,17 @@ $setupReceipt = [ordered]@{
     algorithm = 'SHA-256'
     scope = 'Every regular file in the extracted setup directory except SETUP-RECEIPT.json itself.'
     exclusions = @('SETUP-RECEIPT.json is excluded to avoid self-hash recursion. The external ZIP, sidecar, and package receipt are produced after this receipt is sealed.')
+    releaseSecurity = [ordered]@{
+        runtimeSha256 = $renamedExecutableHash
+        runtimeSignatureStatus = $renamedSignature.Status.ToString()
+        runtimeSignerSubject = if ($renamedSignature.SignerCertificate) { $renamedSignature.SignerCertificate.Subject } else { $null }
+        runtimeByteIdentityPreserved = $runtimeByteIdentityPreserved
+        runtimeResourceMutationApplied = $false
+        setupLauncherSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $setupLauncherPath).Hash.ToUpperInvariant()
+        setupLauncherSignatureStatus = $setupLauncherSignature.Status.ToString()
+        setupLauncherSignerSubject = if ($setupLauncherSignature.SignerCertificate) { $setupLauncherSignature.SignerCertificate.Subject } else { $null }
+        normalSecurityBypassUsed = $false
+    }
     files = @($setupFiles)
 }
 $setupReceipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $setupReceiptPath -Encoding utf8
@@ -286,6 +393,13 @@ $packageReceipt = [ordered]@{
     scope = 'The final ZIP bytes, its external SHA-256 sidecar, and the sealed setup receipt embedded in the ZIP.'
     exclusions = @('This external package receipt excludes itself to avoid self-hash recursion.')
     explorerPathBudget = $pathBudget
+    releaseSecurity = [ordered]@{
+        runtimeSignatureStatus = $renamedSignature.Status.ToString()
+        runtimeByteIdentityPreserved = $runtimeByteIdentityPreserved
+        setupLauncherSignatureStatus = $setupLauncherSignature.Status.ToString()
+        normalSecurityBypassUsed = $false
+        publicReleaseTrusted = [bool]($renamedSignature.Status -eq 'Valid' -and $setupLauncherSignature.Status -eq 'Valid')
+    }
     artifacts = @(
         [ordered]@{ path = [IO.Path]::GetFileName($setupZip); bytes = [long](Get-Item -LiteralPath $setupZip).Length; sha256 = $setupHash },
         [ordered]@{ path = [IO.Path]::GetFileName($sidecarPath); bytes = [long](Get-Item -LiteralPath $sidecarPath).Length; sha256 = $sidecarHash },
@@ -299,6 +413,12 @@ Remove-Item -LiteralPath $temporarySetupParent -Recurse -Force
     Executable = Join-Path $finalRoot 'WellbeingCompanionWorkingTitle.exe'
     SignatureStatus = $renamedSignature.Status
     Signer = if ($renamedSignature.SignerCertificate) { $renamedSignature.SignerCertificate.Subject } else { $null }
+    RuntimeSource = $runtimeSource
+    RuntimeByteIdentityPreserved = $runtimeByteIdentityPreserved
+    RuntimeResourceMutationApplied = $false
+    OfficialElectronHostSignatureStatus = $officialUpstreamSignature.Status
+    SetupLauncherSignatureStatus = $setupLauncherSignature.Status
+    NormalSecurityBypassUsed = $false
     InstallerZip = $setupZip
     InstallerZipSha256 = $setupHash
     InstallerSidecar = $sidecarPath

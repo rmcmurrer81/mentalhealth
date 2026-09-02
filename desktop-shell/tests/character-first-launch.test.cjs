@@ -10,15 +10,30 @@ const sourceRoot = path.resolve(__dirname, '..', '..', 'src');
 const main = fs.readFileSync(path.join(desktopRoot, 'main.cjs'), 'utf8');
 const preload = fs.readFileSync(path.join(desktopRoot, 'preload.cjs'), 'utf8');
 const app = fs.readFileSync(path.join(sourceRoot, 'App.tsx'), 'utf8');
+const onboardingProbe = fs.readFileSync(
+  path.resolve(__dirname, '..', 'scripts', 'Test-PackagedOnboardingVoice.ps1'),
+  'utf8',
+);
 
 test('ordinary launch is compact and pinned while smoke and visual verification remain full-sized', () => {
-  assert.match(main, /const initialWindowMode = smokeMode \|\| visualPreviewMode \? WINDOW_MODE\.FULL : WINDOW_MODE\.COMPACT/);
+  assert.match(main, /const initialWindowMode = smokeMode \|\| visualPreviewMode \|\| onboardingVoiceProbeMode \? WINDOW_MODE\.FULL : WINDOW_MODE\.COMPACT/);
   assert.match(main, /setNativeWindowMode\(initialWindowMode\)/);
   assert.match(main, /initialRendererTarget\.searchParams\.set\('layout', initialWindowMode\)/);
   assert.match(app, /return layout === "full" \|\| layout === "character" \? layout : "compact"/);
   assert.match(app, /useState\(initialWindowLayoutRef\.current !== "full"\)/);
   assert.match(main, /setNativeAlwaysOnTop\(defaultAlwaysOnTopForMode\(mode\)\)/);
   assert.match(app, /const \[alwaysOnTop, setAlwaysOnTop\] = useState\(initialWindowLayoutRef\.current !== "full"\)/);
+  assert.match(onboardingProbe, /\$probeProcess\.WaitForExit\(\)/);
+  assert.match(onboardingProbe, /\$probeProcess\.Refresh\(\)/);
+  assert.match(onboardingProbe, /\[string\]::IsNullOrWhiteSpace\(\[string\]\$probeProcess\.ExitCode\)/);
+  assert.match(onboardingProbe, /\$null -ne \$probeExitCode -and \$probeExitCode -ne 0/);
+  assert.match(onboardingProbe, /\[string\]::IsNullOrWhiteSpace\(\$diagnostic\)/);
+  assert.doesNotMatch(onboardingProbe, /mouthMovingObserved/);
+  assert.match(onboardingProbe, /\$receipt\.onboarding\.orbObserved -ne \$true/);
+  assert.match(onboardingProbe, /\$receipt\.onboarding\.oldSpritePathMounted -ne \$false/);
+  assert.match(onboardingProbe, /reactive-css-orb-2d/);
+  assert.match(onboardingProbe, /temporary-orb-not-3d-character/);
+  assert.match(onboardingProbe, /fail-temporary-orb-no-live-mesh/);
 });
 
 test('native tray changes and renderer presentation cannot drift apart', () => {

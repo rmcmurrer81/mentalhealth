@@ -20,8 +20,8 @@ function resolveWindowPresentation(smokeMode) {
   if (typeof smokeMode !== 'boolean') throw new TypeError('smokeMode must be a boolean.');
   return Object.freeze({
     window: Object.freeze({
-      show: smokeMode,
-      opacity: smokeMode ? 0 : 1,
+      show: false,
+      opacity: 1,
       skipTaskbar: smokeMode,
       focusable: !smokeMode,
     }),

@@ -4,8 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import {
   LOCAL_VOICE_RESULT_SCHEMA,
   LOCAL_VOICE_STATUS_SCHEMA,
+  LOCAL_VOICE_PLAYBACK_SCHEMA,
   approvedVoiceSelector,
   type LocalVoiceClient,
+  type LocalVoicePlaybackEvent,
   type LocalVoiceProviderStatus,
   type LocalVoiceSpeakRequest,
   type LocalVoiceSpeakResult,
@@ -28,6 +30,17 @@ function readyStatus(overrides: Partial<LocalVoiceProviderStatus> = {}): LocalVo
 
 function completed(requestId: string): LocalVoiceSpeakResult {
   return { schema: LOCAL_VOICE_RESULT_SCHEMA, requestId, status: "completed" };
+}
+
+function playback(requestId: string): LocalVoicePlaybackEvent {
+  return {
+    schema: LOCAL_VOICE_PLAYBACK_SCHEMA,
+    requestId,
+    durationMs: 640,
+    timingBasis: "generated-waveform-amplitude-plus-text-class-heuristic",
+    amplitudeFrames: [{ startMs: 0, level: 0.1 }, { startMs: 80, level: 0.55 }],
+    visemeCues: [{ startMs: 0, endMs: 320, viseme: "jaw-open" }, { startMs: 320, endMs: 640, viseme: "rounded" }],
+  };
 }
 
 async function settle(): Promise<void> {
@@ -112,6 +125,48 @@ describe("provider-neutral local voice output", () => {
     expect(new Set(requests.map((request) => request.requestId)).size).toBe(requests.length);
   });
 
+  it("does not claim speech before the installed provider reports actual playback timing", async () => {
+    let resolveRequest!: (result: LocalVoiceSpeakResult) => void;
+    let emitPlayback!: (event: unknown) => void;
+    let unsubscribed = false;
+    const requests: LocalVoiceSpeakRequest[] = [];
+    const client: LocalVoiceClient = {
+      status: async () => readyStatus(),
+      speak: (request) => {
+        requests.push(request);
+        return new Promise((resolve) => { resolveRequest = resolve; });
+      },
+      cancel: () => undefined,
+      onPlaybackStart: (listener) => {
+        emitPlayback = listener;
+        return () => { unsubscribed = true; };
+      },
+    };
+    const events: string[] = [];
+    const output = createLocalVoiceOutput(client);
+    output.speak({
+      text: "The exact local playback event begins this spoken state.",
+      profile: "soft-feminine",
+      enabled: true,
+      onStart: (event) => events.push(`start:${event?.requestId}`),
+      onPlayback: (event) => events.push(`motion:${event.timingBasis}`),
+      onEnd: () => events.push("end"),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(events).toEqual([]);
+    emitPlayback({ ...playback(requests[0].requestId), localPath: "C:\\private\\voice.wav" });
+    expect(events).toEqual([]);
+    emitPlayback(playback(requests[0].requestId));
+    expect(events).toEqual([
+      "motion:generated-waveform-amplitude-plus-text-class-heuristic",
+      `start:${requests[0].requestId}`,
+    ]);
+    resolveRequest(completed(requests[0].requestId));
+    await vi.waitFor(() => expect(events.at(-1)).toBe("end"));
+    output.dispose();
+    expect(unsubscribed).toBe(true);
+  });
+
   it.each([
     [readyStatus({ localOnly: false }), "not-local-only"],
     [readyStatus({ supportedProfiles: ["warm-neutral"] }), "unsupported-profile"],
@@ -189,6 +244,43 @@ describe("provider-neutral local voice output", () => {
     resolveRequest(completed(requests[0].requestId));
     await settle();
     expect(events).toEqual(["start", "end"]);
+  });
+
+  it("mute during packaged generation suppresses playback state and ignores a late timing event", async () => {
+    let resolveRequest!: (result: LocalVoiceSpeakResult) => void;
+    let emitPlayback!: (event: unknown) => void;
+    const requests: LocalVoiceSpeakRequest[] = [];
+    const cancelled: string[] = [];
+    const client: LocalVoiceClient = {
+      status: async () => readyStatus(),
+      speak: (request) => {
+        requests.push(request);
+        return new Promise((resolve) => { resolveRequest = resolve; });
+      },
+      cancel: (requestId) => { cancelled.push(requestId); },
+      onPlaybackStart: (listener) => {
+        emitPlayback = listener;
+        return () => undefined;
+      },
+    };
+    const events: string[] = [];
+    const output = createLocalVoiceOutput(client);
+    output.speak({
+      text: "This generated reply must stay silent after mute.",
+      profile: "calm-masculine",
+      enabled: true,
+      onStart: () => events.push("start"),
+      onPlayback: () => events.push("motion"),
+      onEnd: () => events.push("end"),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    output.cancel();
+    expect(cancelled).toEqual([requests[0].requestId]);
+    expect(events).toEqual(["end"]);
+    emitPlayback(playback(requests[0].requestId));
+    resolveRequest(completed(requests[0].requestId));
+    await settle();
+    expect(events).toEqual(["end"]);
   });
 
   it("does not contact any provider when replies are muted or only contain a resource footer", async () => {

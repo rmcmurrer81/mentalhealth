@@ -3,9 +3,11 @@ import {
   approvedVoiceSelector,
   createUnavailableLocalVoiceClient,
   localVoiceAvailability,
+  validLocalVoicePlaybackEvent,
   validLocalVoiceResult,
   type CompanionVoiceProfile,
   type LocalVoiceClient,
+  type LocalVoicePlaybackEvent,
   type LocalVoiceUnavailableCode,
 } from "./local-voice-client";
 
@@ -16,7 +18,8 @@ export type VoiceOutputRequest = {
   profile: CompanionVoiceProfile;
   enabled: boolean;
   locale?: string;
-  onStart?: () => void;
+  onStart?: (event?: LocalVoicePlaybackEvent) => void;
+  onPlayback?: (event: LocalVoicePlaybackEvent) => void;
   onEnd?: () => void;
   onUnavailable?: (code: LocalVoiceUnavailableCode) => void;
 };
@@ -124,6 +127,7 @@ type ActiveSpeech = {
   finished: boolean;
   request: VoiceOutputRequest;
   locale: string;
+  expectsPlaybackEvent: boolean;
 };
 
 /**
@@ -134,6 +138,16 @@ type ActiveSpeech = {
 export function createLocalVoiceOutput(client: LocalVoiceClient = createUnavailableLocalVoiceClient()): VoiceOutput {
   let nextToken = 0;
   let active: ActiveSpeech | null = null;
+  const unsubscribePlayback = client.onPlaybackStart?.((value) => {
+    if (!validLocalVoicePlaybackEvent(value)) return;
+    const session = active;
+    if (!session || session.finished || session.currentRequestId !== value.requestId) return;
+    session.request.onPlayback?.(value);
+    if (!session.started) {
+      session.started = true;
+      session.request.onStart?.(value);
+    }
+  });
 
   function complete(session: ActiveSpeech, unavailable?: LocalVoiceUnavailableCode) {
     if (session.finished) return;
@@ -176,7 +190,7 @@ export function createLocalVoiceOutput(client: LocalVoiceClient = createUnavaila
         if (active?.token !== session.token || session.finished) return;
         const requestId = `voice-${session.token}-${index + 1}`;
         session.currentRequestId = requestId;
-        if (!session.started) {
+        if (!session.started && !session.expectsPlaybackEvent) {
           session.started = true;
           session.request.onStart?.();
         }
@@ -220,6 +234,7 @@ export function createLocalVoiceOutput(client: LocalVoiceClient = createUnavaila
         finished: false,
         request,
         locale: normalizedLocale(request.locale),
+        expectsPlaybackEvent: typeof client.onPlaybackStart === "function",
       };
       active = session;
       void run(session);
@@ -229,6 +244,7 @@ export function createLocalVoiceOutput(client: LocalVoiceClient = createUnavaila
     },
     dispose() {
       invalidate(false);
+      unsubscribePlayback?.();
     },
   };
 }

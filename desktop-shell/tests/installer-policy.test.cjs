@@ -63,10 +63,19 @@ test('installed uninstall routes stay console-free for normal Windows removal', 
   assert.match(uninstaller, /-WindowStyle Hidden -ExecutionPolicy RemoteSigned -File/);
 });
 
-test('builder binds the Vite production build, custom assets, setup, and final archive', () => {
+test('builder binds the Vite build, setup archive, and exact Electron release-security provenance', () => {
   const source = fs.readFileSync(path.join(scripts, 'Build-WindowsPackage.ps1'), 'utf8');
   assert.match(source, /C2EF9A5F65472C34D14BD3E67B7D14E66B0C01F124ABA45263D6A4232160E13A/);
+  assert.match(source, /E885FFC2A09DAB4C14DE706E3662A5929D1E65EA4EA347C56FD0964640EB923B/);
   assert.match(source, /Get-AuthenticodeSignature/);
+  assert.match(source, /PublisherSignedExecutableSha256/);
+  assert.match(source, /PublisherSignerThumbprint/);
+  assert.match(source, /caller-supplied-hash-and-signer-bound-publisher-runtime/);
+  assert.match(source, /runtimeByteIdentityPreserved = \$true/);
+  assert.match(source, /resourceMutationApplied = \$false/);
+  assert.match(source, /renameChangedBytes = \$false/);
+  assert.match(source, /normalSecurityBypassUsed = \$false/);
+  assert.match(source, /Avoiding resource mutation cannot create a Microsoft or Electron trust chain/);
   assert.match(source, /Wellbeing-Companion-Working-Title-Setup-\$packageVersion-win32-x64\.zip/);
   assert.match(source, /Copy-Item -LiteralPath \$webDistRoot/);
   assert.match(source, /bundledRuntimeOrigin = 'http:\/\/127\.0\.0\.1:43724\/'/);
@@ -103,14 +112,26 @@ test('verifier checks exact receipts, offline assets, permissions, local model b
   assert.match(source, /localStorageRoundTrip/);
   assert.match(source, /exact renderer session did not prove its pre-navigation loopback warmup/i);
   assert.match(source, /bounded initial-navigation evidence is invalid/i);
-  assert.match(source, /packaged procedural 3D renderer did not prove a live articulated wave/);
-  assert.match(source, /webgl-3d-motion/);
+  assert.match(source, /packaged temporary orb did not prove stable runtime state/);
+  assert.match(source, /reactive-css-orb-2d/);
+  assert.match(source, /sanitized-playback-amplitude-envelope/);
+  assert.match(source, /smooth-state-transitions-plus-voice-reactive-core/);
+  assert.match(source, /sanitized-playback-energy-only/);
+  assert.match(source, /fail-temporary-orb-no-live-mesh/);
+  assert.match(source, /forbidden companion sprite or frame metadata/);
+  assert.match(source, /manifest\.webmanifest/);
+  assert.match(source, /exact package service worker omits an emitted build asset/i);
+  assert.match(source, /beforeinstallprompt/);
   assert.match(source, /motionTick/);
   assert.match(source, /microphoneRequiresExplicitHandsFreeIpc/);
   assert.match(source, /displayCaptureAllowed/);
   assert.match(source, /localModelBoundary/);
   assert.match(source, /liveProbePerformed/);
   assert.match(source, /localVoiceBoundary/);
+  assert.match(source, /localSpeechProviderAssets/);
+  assert.match(source, /packaged-speech-probe\.cjs/);
+  assert.match(source, /fixedSyntheticProbePath/);
+  assert.match(source, /rawAudioPersisted = \$false/);
   assert.match(source, /providerConfigured/);
   assert.match(source, /playbackVerified/);
   assert.match(source, /systemVoiceFallback/);
@@ -122,6 +143,29 @@ test('verifier checks exact receipts, offline assets, permissions, local model b
   assert.match(source, /TAMPER-PROBE/);
   assert.match(source, /receiptBoundTamperRejected = \$tamperRejected/);
   assert.match(source, /ExtractionBaseRoot/);
+  assert.match(source, /spriteAssetPackaged = \$false/);
+  assert.match(source, /expectedOfficialElectronExecutableSha256/);
+  assert.match(source, /official Electron host hash or upstream Authenticode state is invalid/i);
+  assert.match(source, /releaseSecurityEvidence/);
+  assert.match(source, /runtimeByteIdentityPreserved/);
+  assert.match(source, /resourceMutationApplied/);
+  assert.match(source, /setupLauncherSignatureStatus/);
+  assert.match(source, /normalSecurityBypassUsed = \$false/);
+  assert.match(source, /publicReleaseHoldReason/);
+});
+
+test('embedded package README tracks the current desktop package version', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+  const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8');
+  const source = fs.readFileSync(path.join(scripts, 'Build-WindowsPackage.ps1'), 'utf8');
+  const currentArchive = `Wellbeing-Companion-Working-Title-Setup-${manifest.version}-win32-x64.zip`;
+
+  assert.match(source, /Copy-Item -LiteralPath \(Join-Path \$projectRoot 'README\.md'\) -Destination \(Join-Path \$appResourceRoot 'DESKTOP-README\.md'\)/);
+  assert.match(source, /Copy-Item -LiteralPath \(Join-Path \$projectRoot 'README\.md'\) -Destination \(Join-Path \$setupRoot 'README\.txt'\)/);
+  assert.match(readme, new RegExp(`Candidate ${manifest.version.replaceAll('.', '\\.')}`));
+  assert.match(readme, new RegExp(currentArchive.replaceAll('.', '\\.')));
+  assert.doesNotMatch(readme, /Candidate 0\.2\.13/);
+  assert.doesNotMatch(readme, /Setup-0\.2\.13-win32-x64\.zip/);
 });
 
 test('isolated lifecycle harness is temp-root-only and honest about not executing real installer', () => {

@@ -13,18 +13,26 @@ test('double-click setup launcher targets the sealed support installer instead o
   assert.match(source, /InstallerScriptName = "Install-WellbeingCompanion\.ps1"/);
   assert.match(source, /Environment\.SpecialFolder\.System/);
   assert.match(source, /WindowsPowerShell/);
-  assert.match(source, /-NoLogo -NoProfile -ExecutionPolicy Bypass -File/);
+  assert.match(source, /-NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File/);
   assert.match(source, /-AcceptVerifiedUnsignedRuntime/);
   assert.match(source, /Process\.Start\(startInfo\)/);
   assert.match(source, /installer\.WaitForExit\(\)/);
 });
 
-test('setup launcher makes the unsigned owner-test boundary explicit and cancel-first', () => {
-  assert.match(source, /not publisher-signed/);
-  assert.match(source, /verify the sealed package receipt/);
-  assert.match(source, /MessageBoxButtons\.OKCancel/);
-  assert.match(source, /MessageBoxDefaultButton\.Button2/);
-  assert.match(source, /acknowledgement != DialogResult\.OK/);
+test('setup launcher uses meaningful wizard pages without custom warning or completion popups', () => {
+  assert.match(source, /class SetupWizard : Form/);
+  assert.match(source, /Welcome/);
+  assert.match(source, /Ready to install/);
+  assert.match(source, /ProgressBarStyle\.Marquee/);
+  assert.match(source, /Setup complete/);
+  assert.match(source, /Open Wellbeing Companion after setup/);
+  assert.match(source, /First launch/);
+  assert.match(source, /Choose your name, voice, theme, and microphone preference inside the app/);
+  assert.match(source, /Verified local installer/);
+  assert.match(source, /Text = "WC"/);
+  assert.doesNotMatch(source, /Text = "✦"/);
+  assert.doesNotMatch(source, /MessageBox\.Show/);
+  assert.doesNotMatch(source, /owner-test|not publisher-signed/i);
 });
 
 test('setup launcher refuses missing or escaped support paths and surfaces failure', () => {
@@ -32,7 +40,10 @@ test('setup launcher refuses missing or escaped support paths and surfaces failu
   assert.match(source, /IsStrictChildPath\(supportRoot, installerScript\)/);
   assert.match(source, /!Directory\.Exists\(supportRoot\) \|\| !File\.Exists\(installerScript\)/);
   assert.match(source, /UseShellExecute = false/);
-  assert.match(source, /CreateNoWindow = false/);
-  assert.match(source, /installer\.ExitCode != 0/);
+  assert.match(source, /CreateNoWindow = true/);
+  assert.match(source, /ShowInlineFailure/);
+  assert.match(source, /BackgroundWorker/);
+  assert.match(source, /installer\.ExitCode == 0/);
+  assert.match(source, /new InstallResult\(installer\.ExitCode/);
   assert.match(source, /Nothing was installed/);
 });
