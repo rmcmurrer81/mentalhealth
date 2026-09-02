@@ -21,14 +21,11 @@ contest submission remain on hold. The owner must:
 1. obtain written organizer confirmation that the disclosed AI-assisted development
    workflow is eligible under the rule prohibiting outside-group development help;
 2. complete the real owner usability and installer review;
-3. close the installed app and rerun the complete desktop test suite without the
-   loopback-port collision documented in
-   [VERIFICATION_SNAPSHOT_20260901.md](VERIFICATION_SNAPSHOT_20260901.md);
-4. capture the exact current app with a fictional, disposable profile;
-5. record, caption, review, and upload a video no longer than four minutes;
-6. add a real Try-it-out URL and video URL, or leave those fields empty if the form
+3. capture the exact current app with a fictional, disposable profile;
+4. record, caption, review, and upload a video no longer than four minutes;
+5. add a real Try-it-out URL and video URL, or leave those fields empty if the form
    permits;
-7. confirm the repository is public and contains no local profiles, caches, secrets,
+6. confirm the repository is public and contains no local profiles, caches, secrets,
    private receipts, or ignored release artifacts.
 
 Do not claim diagnosis, treatment, clinical validation, emotion recognition,
@@ -46,6 +43,13 @@ a true 3D character.
 - [media/current-orb-owner-capture-cropped.png](media/current-orb-owner-capture-cropped.png)
   — factual owner capture cropped to exclude the conversation and personal text;
   provenance is recorded in the adjacent Markdown receipt.
+- [media/default-on-speaking-controls-owner-capture-cropped.png](media/default-on-speaking-controls-owner-capture-cropped.png)
+  — factual narrow crop showing default-on local spoken-reply status and controls.
+- [media/synthetic-disclosure-owner-capture-redacted.png](media/synthetic-disclosure-owner-capture-redacted.png)
+  — factual narrow crop of the synthetic-companion disclosure with the owner's first
+  name visibly redacted.
+- [media/additional-owner-crops-provenance.md](media/additional-owner-crops-provenance.md)
+  — source, crop, redaction, and hash receipt for the two narrow crops above.
 - [VERIFICATION_SNAPSHOT_20260901.md](VERIFICATION_SNAPSHOT_20260901.md) — reproduced results and current blockers.
 
 ## Official local requirements record

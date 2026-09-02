@@ -115,10 +115,8 @@ lifecycle changes, and remain usable when voice is unavailable.
 - The product remains useful as typed local software when optional Ollama, Chatterbox,
   or faster-whisper dependencies are absent.
 
-Before submission, rerun the full desktop suite after closing the installed app. The
-September 1 audit passed 80 tests and had one environmental failure because that
-running app already owned the test loopback port; this packet does not turn that run
-into an 81/81 claim.
+After the fixed loopback port was confirmed free, the September 1 audit reran the
+complete desktop suite and passed **81/81 tests**.
 
 ## What we learned
 

@@ -1,6 +1,9 @@
-# Wellbeing companion — working title
+# Here With You — Local Wellbeing Companion
 
-An original, local-first wellbeing companion for Hack for Humanity | Summer 2026. The final friendly name will be chosen by the project owner after the product behavior and identity are ready.
+An original, local-first wellbeing companion for Hack for Humanity | Summer 2026.
+The current Windows development package still uses the internal
+`WellbeingCompanionWorkingTitle` identity so its verified package receipts and
+uninstall ownership markers remain valid.
 
 ## What works now
 
@@ -62,7 +65,107 @@ The current candidate source snapshot was rerun on 2026-09-01 with these reprodu
 
 The reproducible evaluation protocol, fictional corpus, hostile probes, and report generator are in [`evaluation/`](evaluation/). Running the evaluation generator produces the machine report locally. These are software and adversarial scenario tests, not clinical validation. The sanitized current evidence is in [`docs/CURRENT_VERIFICATION_EVIDENCE.md`](docs/CURRENT_VERIFICATION_EVIDENCE.md). Candidate 0.2.25 is unsigned; its automated lifecycle receipt is a temporary-root harness rather than a real-profile installer run.
 
-## Run locally
+## Try it on Windows
+
+There is currently **no GitHub Release or public installer attached to this
+repository**. The verified 0.2.25 setup archive is an unsigned owner-test candidate
+and is intentionally not published as a normal consumer download. Do not download an
+installer offered anywhere else as if it came from this project.
+
+The safest public try path is the typed, loopback-only source build below.
+
+### Prerequisites
+
+- Windows with PowerShell;
+- Node.js 24.x (the verified run used 24.15.0);
+- pnpm 11.19.0;
+- Git only if you use the clone option;
+- an internet connection for the first dependency install unless the packages are
+  already in your local pnpm cache.
+
+Confirm the versions before continuing:
+
+```powershell
+node --version
+pnpm --version
+```
+
+### 1. Download the public source
+
+Clone the repository:
+
+```powershell
+git clone https://github.com/rmcmurrer81/mentalhealth.git
+Set-Location mentalhealth
+```
+
+Or download the
+[current public source ZIP](https://github.com/rmcmurrer81/mentalhealth/archive/refs/heads/main.zip),
+extract the whole ZIP, open PowerShell in the extracted
+`mentalhealth-main` folder, and continue there.
+
+### 2. Install and verify
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm test
+pnpm build
+```
+
+The current expected source result is 1,733 passing tests across 41 files. If the
+install, tests, or build fail, stop there rather than bypassing the error.
+
+### 3. Safest first launch
+
+```powershell
+pnpm dev
+```
+
+Open the exact `http://127.0.0.1:...` URL printed by Vite. For a first review:
+
+1. use a fictional preferred name and disposable demo details;
+2. leave microphone access off and use typed conversation;
+3. do not enter real medical, crisis, or other sensitive information;
+4. keep the terminal open while testing; press `Ctrl+C` there to stop the server.
+
+The deterministic conversation core and normal profile storage run locally. Browser
+profile data is stored for that loopback origin. No cloud language model is enabled.
+Optional Ollama wording, Chatterbox output, and cache-only faster-whisper input are
+not bundled and may truthfully remain unavailable. The browser development view can
+use browser speech capability only after explicit microphone use; leave it off for
+the strict typed-local path.
+
+To reset the demo, use the app's memory review/delete controls and, if needed, clear
+site data for the exact loopback origin in the browser. Deleting the source folder
+does not itself clear browser site data.
+
+### Native Windows candidate for maintainers
+
+The repository can build an unsigned native candidate locally, but this is a
+developer workflow—not a public binary download:
+
+```powershell
+pnpm test
+pnpm build
+pnpm --dir desktop-shell test
+pnpm --dir desktop-shell lint
+pnpm --dir desktop-shell pack:win
+```
+
+The package builder downloads or reuses the pinned Electron 43.4.1 Windows archive,
+verifies its recorded SHA-256, and writes generated artifacts under
+`desktop-shell\release\`. The setup ZIP contains
+`SETUP-WELLBEING-COMPANION.exe`; extract the entire ZIP before launching it. The
+candidate is unsigned, Windows may block or warn about it, and this project does not
+recommend weakening Windows security controls.
+
+For a locally built candidate, uninstall through Windows **Installed Apps** or the
+Start-menu uninstall shortcut. The verified normal choice preserves app data; the
+separate remove-all choice is explicit. See
+[`desktop-shell/README.md`](desktop-shell/README.md#install-and-uninstall) for the
+exact package, install, uninstall, and remaining-gate details.
+
+## Quick source commands
 
 ```powershell
 pnpm install --frozen-lockfile

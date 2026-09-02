@@ -61,10 +61,9 @@ ignored by the source repository. Publish them separately only after owner appro
 - Automated engineering evidence does not prove every possible phrase, clinical
   effectiveness, diagnosis, treatment safety, cultural completeness, or accessibility
   acceptance.
-- A fresh documentation-audit rerun passed 80 desktop tests and encountered one
-  `EADDRINUSE` failure because the owner was actively running the installed app on
-  the same fixed loopback port. Do not call that fresh run 81/81 until the app is
-  closed and the suite is rerun.
+- After the fixed loopback port was confirmed free, a fresh documentation-audit
+  rerun passed **81/81 desktop tests**. The earlier `EADDRINUSE` collision is no
+  longer a current verification blocker.
 - Real owner review is still needed for empathy, context continuity, layout, orb
   motion, voice naturalness, default-on speech, explicit mute persistence, and
   end-to-end usability.

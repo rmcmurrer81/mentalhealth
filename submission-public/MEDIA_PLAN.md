@@ -13,7 +13,7 @@
 This thumbnail is marketing art, not evidence of app behavior. Keep generated art out
 of the factual screenshot set below.
 
-## Current factual owner capture
+## Current factual owner captures
 
 - File: `media/current-orb-owner-capture-cropped.png`
 - Dimensions: 426 × 418
@@ -25,6 +25,24 @@ of the factual screenshot set below.
 This is a factual interim picture of the current native orb UI, not generated app UI.
 Its adjacent provenance receipt binds the source and crop. It does not replace the
 final clean 1920 × 1080 fictional-profile screenshot set.
+
+- File: `media/default-on-speaking-controls-owner-capture-cropped.png`
+- Dimensions: 406 × 104
+- SHA-256:
+  `FBF07EA91F80F24FE4DA7CFA2630406495B1137DBFB2EAD36B5371F62CD9A770`
+- Content class: narrow factual owner capture of spoken-reply status and controls
+
+- File: `media/synthetic-disclosure-owner-capture-redacted.png`
+- Dimensions: 349 × 119
+- SHA-256:
+  `249AD925F0415AFF6DF5C54D117CE038F3C42C0CCA8D74CF5D196C7539FFE6AD`
+- Content class: narrow factual owner capture with one visible name redaction
+
+The two narrow crops contain no owner-entered conversation. Their shared provenance
+receipt records the exact source hash, crop rectangles, redaction rectangle, and
+output hashes. Together with the marketing thumbnail and current-orb crop, the packet
+now contains four reviewable gallery items. The three factual crops remain interim
+owner captures rather than final 1920 × 1080 gallery evidence.
 
 ## Final screenshot set
 

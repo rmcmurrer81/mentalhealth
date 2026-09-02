@@ -15,20 +15,12 @@
 | Source tests | **PASS — 1,733/1,733 in 41/41 files** |
 | TypeScript + Vite production build | **PASS** |
 | Desktop JavaScript and PowerShell syntax | **PASS** |
-| Desktop tests | **80 passed, 1 environmental failure** |
+| Desktop tests | **PASS — 81/81** |
 
-The desktop failure was:
-
-```text
-actual loopback runtime serves health and assets and closes cleanly
-EADDRINUSE: 127.0.0.1:43724
-```
-
-Read-only process inspection showed that port 43724 was already owned by the installed
-`WellbeingCompanionWorkingTitle.exe` that the owner was actively running. The audit
-did not stop that application. This is consistent with an environmental collision,
-but the fresh run must not be described as 81/81 until the owner closes the installed
-app and the suite is rerun successfully.
+An earlier attempt encountered `EADDRINUSE` because the installed app still owned
+the fixed loopback port. After the port was confirmed free, the complete desktop suite
+was rerun and passed 81/81. The earlier environmental collision is not counted as a
+current product failure.
 
 ## Existing candidate evidence
 
@@ -57,7 +49,6 @@ evidence, not a new result from this documentation task.
 - The installer is unsigned.
 - No hosted or downloadable public judge URL is verified.
 - The final native screenshots and captioned demo video do not exist.
-- The fresh desktop test run needs a clean-port rerun.
 - Automated and synthetic evaluation is not clinical validation.
 
 ## Current publication decision

@@ -94,8 +94,8 @@ not clinical validation.”
 Before recording, regenerate the evidence card from the final verified run. Do not
 narrate a hard-coded test count from an older packet.
 
-Only say the desktop suite is fully green if it is rerun after closing the installed
-app and all 81 tests pass.
+The complete desktop suite was rerun on a free loopback port and passed 81/81. Keep
+the on-screen evidence card bound to the final verified source.
 
 ## 3:30–3:45 — Close
 
